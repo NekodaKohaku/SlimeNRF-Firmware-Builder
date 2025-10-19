@@ -18,6 +18,7 @@ jobs:
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
+      # 使用哪個 SPI 控制器（要換就改成 spi2 等）
       SPI_LABEL: "spi3"
 
       # --- ピン設定 ---
@@ -44,7 +45,7 @@ jobs:
       EXTRA_ACTIONS: "disabled"
       SW0_BUTTON:   "disabled"
 
-      # --- logs ---
+      # Release 是否附上 smspi 的 DTS 原檔方便檢查
       ATTACH_SMSPI_DTS: "enabled"
 
     steps:
@@ -58,7 +59,7 @@ jobs:
           git log -1 --pretty=%B >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      - name: Clean Landing Site
+      - name: Clean landing site
         run: sudo rm -rf zephyr-workspace/SlimeNRF-CI
 
       - name: Acquire code (manifest at zephyr-workspace/SlimeNRF-CI)
@@ -115,12 +116,19 @@ jobs:
           cd zephyr-workspace
           printf "\nCONFIG_BUILD_OUTPUT_UF2=y" >> SlimeVR-Tracker-nRF/prj.conf
 
-      - name: Sanity check workspace
+      - name: Sanity check workspace + list boards
         run: |
-          ls -la zephyr-workspace
-          test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
+          cd zephyr-workspace/SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2 || (echo "board dir missing"; exit 1)
+          echo "== Files in boards/nordic/promicro_uf2 =="
+          ls -la
+          echo "== Look for promicro_uf2_smspi.dts =="
+          test -f promicro_uf2_smspi.dts && echo "FOUND promicro_uf2_smspi.dts" || (echo "MISSING promicro_uf2_smspi.dts"; exit 1)
+          cd ../../..
+          echo "== west boards (first 200 lines) =="
+          west boards | sed -n '1,200p' || true
 
-      - name: Apply pin mapping to DTS
+      # === 核心：SPI + I2C + user pins 覆寫（含 smspi 變體）===
+      - name: Apply pin mapping to DTS (SMSPI-aware + I2C)
         shell: bash
         run: |
           set -euo pipefail
@@ -130,11 +138,6 @@ jobs:
           BASE_DTS="$DTS_DIR/promicro_uf2.dts"
           VAR_DTS="$DTS_DIR/promicro_uf2_smspi.dts"
 
-          label="${SPI_LABEL:-spi3}"
-          default_pat="^[[:space:]]*${label}_default:[[:space:]]*${label}_default[[:space:]]*\\{"
-          sleep_pat="^[[:space:]]*${label}_sleep:[[:space:]]*${label}_sleep[[:space:]]*\\{"
-          node_pat="^[[:space:]]*&${label}[[:space:]]*\\{"
-
           parse_pin() {
             local s="$1" port pin
             if [[ $s =~ ^P?([01])\.([0-9]{1,2})$ ]]; then port="${BASH_REMATCH[1]}"; pin="${BASH_REMATCH[2]}";
@@ -143,6 +146,7 @@ jobs:
             pin=$((10#$pin)); echo "$port $pin"
           }
 
+          # 解析所有腳位
           read MISO_PORT MISO_PIN < <(parse_pin "${MISO}")
           read MOSI_PORT MOSI_PIN < <(parse_pin "${MOSI}")
           read  SCK_PORT  SCK_PIN < <(parse_pin "${SCK}")
@@ -161,36 +165,34 @@ jobs:
             if [[ $port -eq 1 && $pin -gt 15 ]]; then echo "$P: Port 1 supports only 0..15"; exit 1; fi
           done
 
-          if [[ $SDA_PORT -eq $MOSI_PORT && $SDA_PIN -eq $MOSI_PIN ]] || \
-             [[ $SCL_PORT -eq $SCK_PORT  && $SCL_PIN -eq $SCK_PIN  ]]; then
-            echo "::warning::I2C pins overlap with SPI pins; change SDA/SCL if you need I2C alive together with SPI."
-          fi
+          # 和 Zephyr 的 board target 規則對齊的樣式（**這三個是之前漏掉的重點**）
+          default_pat="^[[:space:]]*${SPI_LABEL}_default:[[:space:]]*${SPI_LABEL}_default[[:space:]]*\\{"
+          sleep_pat="^[[:space:]]*${SPI_LABEL}_sleep:[[:space:]]*${SPI_LABEL}_sleep[[:space:]]*\\{"
+          node_pat="^[[:space:]]*&${SPI_LABEL}[[:space:]]*\\{"
 
+          # SPI pinctrl（只改 BASE_DTS，pinctrl 定義在這）
           if grep -qE "${default_pat}" "$BASE_DTS"; then
             sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
             sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
             \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
             }" "$BASE_DTS"
-          else
-            echo "::notice::${label}_default pinctrl block not found in ${BASE_DTS} (skip)."
           fi
-
           if grep -qE "${sleep_pat}" "$BASE_DTS"; then
             sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
             sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
             \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
             }" "$BASE_DTS"
-          else
-            echo "::notice::${label}_sleep pinctrl block not found in ${BASE_DTS} (skip)."
           fi
 
+          # I2C pinctrl（在 BASE_DTS）
           if grep -qE "^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{" "$BASE_DTS"; then
             sed -i -E "/^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
           fi
-          if grep -qE "^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{", "$BASE_DTS"; then
+          if grep -qE "^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{" "$BASE_DTS"; then
             sed -i -E "/^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
           fi
 
+          # CS 改在 smspi 變體優先，否則回寫 base
           target_for_cs="$BASE_DTS"
           if [[ -f "$VAR_DTS" ]] && grep -qE "${node_pat}" "$VAR_DTS"; then
             target_for_cs="$VAR_DTS"
@@ -200,11 +202,13 @@ jobs:
           \\tcs-gpios = <\\&gpio${CS_PORT} ${CS_PIN} GPIO_ACTIVE_LOW>\\;
           }" "$target_for_cs" || true
 
+          # PWM0 pinctrl（在 BASE_DTS）
           sed -i -E \
             -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             "$BASE_DTS"
 
+          # buttons / zephyr,user 兩檔都嘗試（節點存在才會動）
           for DTS in "$BASE_DTS" "$VAR_DTS"; do
             [[ -f "$DTS" ]] || continue
             sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS" || true
@@ -219,7 +223,7 @@ jobs:
 
           echo "=== After patch summary ==="
           echo "[BASE_DTS] $BASE_DTS"
-          grep -nE "spi3_(default|sleep)|pwm0_(default|sleep)|i2c0_(default|sleep)" "$BASE_DTS" || true
+          grep -nE "${SPI_LABEL}_(default|sleep)|pwm0_(default|sleep)|i2c0_(default|sleep)" "$BASE_DTS" || true
           echo "[cs-gpios in BASE/VAR]"
           grep -nE "cs-gpios" "$BASE_DTS" "$VAR_DTS" 2>/dev/null || true
           echo "[user pins]"
