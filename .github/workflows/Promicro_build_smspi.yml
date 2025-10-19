@@ -102,7 +102,7 @@ jobs:
       - name: Derive names (smSPI)
         run: |
           echo "BOARD=${BOARD_PREFIX}smspi" >> $GITHUB_ENV
-          echo "OUTPUT_NAME=${FILENAME_PREFIX}smSPI_Mag_ProMicro" >> $GITHUB_ENV
+          echo "OUTPUT_NAME=${FILENAME_PREFIX}smSPI_ProMicro" >> $GITHUB_ENV
 
       - name: Force UF2 output (Kconfig)
         run: |
@@ -252,11 +252,6 @@ jobs:
           }
           mv "$SRC" "Releases/$OUTPUT_NAME.${FILEFORMAT}"
 
-      - name: Generate effective DTS
-        run: |
-          cd zephyr-workspace
-          west build -t dts --build-dir SlimeVR-Tracker-nRF/build || true
-
       - name: Collect DTS & Diff, then Package
         shell: bash
         run: |
@@ -265,22 +260,16 @@ jobs:
 
           mkdir -p Releases/dts
           DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+
           cp "$DTS" "Releases/dts/promicro_uf2.after.dts"
 
-          EFF_DTS="SlimeVR-Tracker-nRF/build/zephyr/zephyr.dts"
-          EFF_DTB="SlimeVR-Tracker-nRF/build/zephyr/zephyr.dtb"
-          if [[ -f "$EFF_DTS" ]]; then
-            cp "$EFF_DTS" "Releases/dts/effective_zephyr.dts"
-          elif [[ -f "$EFF_DTB" ]]; then
-            dtc -I dtb -O dts -o "Releases/dts/effective_zephyr.dts" "$EFF_DTB"
+          if [[ -f "Releases/dts/promicro_uf2.before.dts" ]]; then
+            diff -u "Releases/dts/promicro_uf2.before.dts" "Releases/dts/promicro_uf2.after.dts" > "Releases/dts/promicro_uf2.pins.diff" || true
           else
-            echo "WARN: zephyr.dts / zephyr.dtb not found，pass effective_zephyr.dts"
+            echo "WARN: promicro_uf2.before.dts not found, skipping diff"
           fi
 
-          diff -u "Releases/dts/promicro_uf2.before.dts" "Releases/dts/promicro_uf2.after.dts" > "Releases/dts/promicro_uf2.pins.diff" || true
-
           tar -czf "Releases/${OUTPUT_NAME}_DTS.tgz" -C Releases dts
-
           ls -la Releases
 
       - name: Upload Artifact (UF2)
@@ -303,23 +292,21 @@ jobs:
           prerelease: false
           name: "Latest Firmware"
           body: |
-            Manual build of the SlimeNRF Tracker Firmware (smSPI).
+            Manual build of the SlimeNRF Tracker Firmware.
             Board: ${{ env.BOARD }}
             Features:
               MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
               CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
               SW0=${{ env.SW0_BUTTON }}
-            Pins (logical refs for smSPI):
-              MISO=${{ env.MISO }}, MOSI=${{ env.MOSI }}, SCK=${{ env.SCK }}, CS=${{ env.CS }}
-              SDA=${{ env.I2C_SDA }}, SCL=${{ env.I2C_SCL }}
+            Pins:
+              SDA=${{ env.SDA }}, SCL=${{ env.SCL }}
               PWM0=${{ env.PWM0 }}, SW0=${{ env.SW0 }}
               LED=${{ env.LED }}, CLK=${{ env.CLK }}
               INT=${{ env.INT }}, VCC=${{ env.VCC }}
             DTS artifacts:
               - promicro_uf2.before.dts / promicro_uf2.after.dts
               - promicro_uf2.pins.diff (before vs after)
-              - effective_zephyr.dts (post-build)
           files: |
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
-          clear_attachments: false
+          clear_attachments: true
