@@ -252,28 +252,35 @@ jobs:
           }
           mv "$SRC" "Releases/$OUTPUT_NAME.${FILEFORMAT}"
 
-      # === 新增：收集修改後與有效合併 DTS，並打包 ===
+      - name: Generate effective DTS
+        run: |
+          cd zephyr-workspace
+          west build -t dts --build-dir SlimeVR-Tracker-nRF/build || true
+
       - name: Collect DTS & Diff, then Package
         shell: bash
         run: |
           set -euo pipefail
           cd zephyr-workspace
-          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
-          mkdir -p Releases/dts
 
-          # After file
+          mkdir -p Releases/dts
+          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
           cp "$DTS" "Releases/dts/promicro_uf2.after.dts"
 
-          # Effective (post-build merged DTS)，若存在則收集
-          EFF="SlimeVR-Tracker-nRF/build/zephyr/zephyr.dts"
-          if [[ -f "$EFF" ]]; then
-            cp "$EFF" "Releases/dts/effective_zephyr.dts"
+          EFF_DTS="SlimeVR-Tracker-nRF/build/zephyr/zephyr.dts"
+          EFF_DTB="SlimeVR-Tracker-nRF/build/zephyr/zephyr.dtb"
+          if [[ -f "$EFF_DTS" ]]; then
+            cp "$EFF_DTS" "Releases/dts/effective_zephyr.dts"
+          elif [[ -f "$EFF_DTB" ]]; then
+            dtc -I dtb -O dts -o "Releases/dts/effective_zephyr.dts" "$EFF_DTB"
+          else
+            echo "WARN: zephyr.dts / zephyr.dtb not found，pass effective_zephyr.dts"
           fi
 
           diff -u "Releases/dts/promicro_uf2.before.dts" "Releases/dts/promicro_uf2.after.dts" > "Releases/dts/promicro_uf2.pins.diff" || true
 
-          # Package
-          tar -C Releases -czf "Releases/${OUTPUT_NAME}_DTS.tgz" dts
+          tar -czf "Releases/${OUTPUT_NAME}_DTS.tgz" -C Releases dts
+
           ls -la Releases
 
       - name: Upload Artifact (UF2)
