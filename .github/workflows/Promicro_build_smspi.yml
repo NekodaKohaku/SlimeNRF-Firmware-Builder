@@ -18,7 +18,6 @@ jobs:
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
-      # 哪個 SPI 控制器（需要改用別顆就換成 spi2 等）
       SPI_LABEL: "spi3"
 
       # --- ピン設定 ---
@@ -45,7 +44,7 @@ jobs:
       EXTRA_ACTIONS: "disabled"
       SW0_BUTTON:   "disabled"
 
-      # --- logs / release 附檔 ---
+      # --- logs ---
       ATTACH_SMSPI_DTS: "enabled"
 
     steps:
@@ -121,8 +120,7 @@ jobs:
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
 
-      # === 核心：SPI + I2C + user pins 一併覆寫 ===
-      - name: Apply pin mapping to DTS (SMSPI-aware + I2C)  # NEW
+      - name: Apply pin mapping to DTS
         shell: bash
         run: |
           set -euo pipefail
@@ -132,6 +130,11 @@ jobs:
           BASE_DTS="$DTS_DIR/promicro_uf2.dts"
           VAR_DTS="$DTS_DIR/promicro_uf2_smspi.dts"
 
+          label="${SPI_LABEL:-spi3}"
+          default_pat="^[[:space:]]*${label}_default:[[:space:]]*${label}_default[[:space:]]*\\{"
+          sleep_pat="^[[:space:]]*${label}_sleep:[[:space:]]*${label}_sleep[[:space:]]*\\{"
+          node_pat="^[[:space:]]*&${label}[[:space:]]*\\{"
+
           parse_pin() {
             local s="$1" port pin
             if [[ $s =~ ^P?([01])\.([0-9]{1,2})$ ]]; then port="${BASH_REMATCH[1]}"; pin="${BASH_REMATCH[2]}";
@@ -140,13 +143,12 @@ jobs:
             pin=$((10#$pin)); echo "$port $pin"
           }
 
-          # 解析所有腳位
           read MISO_PORT MISO_PIN < <(parse_pin "${MISO}")
           read MOSI_PORT MOSI_PIN < <(parse_pin "${MOSI}")
           read  SCK_PORT  SCK_PIN < <(parse_pin "${SCK}")
           read   CS_PORT   CS_PIN < <(parse_pin "${CS}")
-          read  SDA_PORT  SDA_PIN < <(parse_pin "${SDA}")   # NEW
-          read  SCL_PORT  SCL_PIN < <(parse_pin "${SCL}")   # NEW
+          read  SDA_PORT  SDA_PIN < <(parse_pin "${SDA}")
+          read  SCL_PORT  SCL_PIN < <(parse_pin "${SCL}")
           read PWM0_PORT PWM0_PIN < <(parse_pin "${PWM0}")
           read  SW0_PORT  SW0_PIN < <(parse_pin "${SW0}")
           read  LED_PORT  LED_PIN < <(parse_pin "${LED}")
@@ -159,7 +161,6 @@ jobs:
             if [[ $port -eq 1 && $pin -gt 15 ]]; then echo "$P: Port 1 supports only 0..15"; exit 1; fi
           done
 
-          # 簡單衝突提示（不擋編譯） // NEW
           if [[ $SDA_PORT -eq $MOSI_PORT && $SDA_PIN -eq $MOSI_PIN ]] || \
              [[ $SCL_PORT -eq $SCK_PORT  && $SCL_PIN -eq $SCK_PIN  ]]; then
             echo "::warning::I2C pins overlap with SPI pins; change SDA/SCL if you need I2C alive together with SPI."
@@ -170,18 +171,23 @@ jobs:
             sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
             \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
             }" "$BASE_DTS"
+          else
+            echo "::notice::${label}_default pinctrl block not found in ${BASE_DTS} (skip)."
           fi
+
           if grep -qE "${sleep_pat}" "$BASE_DTS"; then
             sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
             sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
             \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
             }" "$BASE_DTS"
+          else
+            echo "::notice::${label}_sleep pinctrl block not found in ${BASE_DTS} (skip)."
           fi
 
           if grep -qE "^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{" "$BASE_DTS"; then
             sed -i -E "/^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
           fi
-          if grep -qE "^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{" "$BASE_DTS"; then
+          if grep -qE "^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{", "$BASE_DTS"; then
             sed -i -E "/^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
           fi
 
