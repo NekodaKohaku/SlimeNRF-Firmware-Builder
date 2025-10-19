@@ -18,7 +18,7 @@ jobs:
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
-      # --- ピン設定（smSPI 下僅作為參考；不改動硬體 SPIM DTS）---
+      # --- ピン設定 --- 
       MISO: "P0.24"
       MOSI: "P0.06"
       SCK:  "P0.08"
@@ -30,14 +30,14 @@ jobs:
       INT:  "P0.17"
       VCC:  "P0.31"
 
-      # I2C（overlay 會用到，預設對齊 promicro_uf2_smspi.dts）
+      #  --- I2C ---
       I2C_SDA: "P1.13"
       I2C_SCL: "P1.15"
 
-      # --- 機能スイッチ（依 smSPI 參考）---
+      # --- 機能スイッチ---
       MAGNETOMETER: "enabled"
-      SLEEP:        "enabled"
-      SENSOR_CLOCK: "disabled"
+      SLEEP:        "disabled"
+      SENSOR_CLOCK: "enabled"
       EXTRA_ACTIONS: "enabled"
       SW0_BUTTON:   "disabled"
 
@@ -146,7 +146,6 @@ jobs:
             echo "$port $pin"
           }
 
-          # 解析各 pin
           read  LED_PORT  LED_PIN < <(parse_pin "${LED}")
           read  CLK_PORT  CLK_PIN < <(parse_pin "${CLK}")
           read  INT_PORT  INT_PIN < <(parse_pin "${INT}")
@@ -157,7 +156,6 @@ jobs:
           read  SCL_PORT  SCL_PIN < <(parse_pin "${I2C_SCL:-P0.08}")
           read   CS_PORT   CS_PIN < <(parse_pin "${CS}")
 
-          # Port 1 僅支援 0..15
           for P in LED CLK INT VCC SW0 PWM0 SDA SCL CS; do
             eval port=\$${P}_PORT pin=\$${P}_PIN
             if [[ $port -eq 1 && $pin -gt 15 ]]; then
@@ -165,7 +163,6 @@ jobs:
             fi
           done
 
-          # --- zephyr,user：更新 led/clk/int0/vcc
           sed -i -E "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ {
             s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#;
             s#(^[[:space:]]*clk-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#;
@@ -174,25 +171,20 @@ jobs:
             s#(vcc-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${VCC_PORT} ${VCC_PIN}#;
           }" "$DTS"
 
-          # --- buttons：更新 button0 的 gpios（SW0 腳位）
           sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS"
 
-          # --- PWM0 pinctrl（default/sleep）
           sed -i -E \
             -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             "$DTS"
 
-          # --- I2C0 pinctrl（default/sleep）
           sed -i -E \
             -e "/^[[:space:]]*i2c0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" \
             -e "/^[[:space:]]*i2c0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" \
             "$DTS"
 
-          # --- （可選）SPI3 的 CS（overlay 也會改它；對 smSPI 無害）
           sed -i -E "/^[[:space:]]*&spi3[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#cs-gpios[[:space:]]*=<[^;]+>;#cs-gpios = <\\&gpio${CS_PORT} ${CS_PIN} GPIO_ACTIVE_LOW>;#g" "$DTS"
 
-      # smSPI：不改 spi3 pin；只做必要的 clk/sw0 切換
       - name: Enable External Sensor Clock
         if: env.SENSOR_CLOCK == 'enabled'
         run: |
@@ -272,7 +264,6 @@ jobs:
             cp "$EFF" "Releases/dts/effective_zephyr.dts"
           fi
 
-          # Diff（diff 回傳 1 表示有差異，允許）
           diff -u "Releases/dts/promicro_uf2.before.dts" "Releases/dts/promicro_uf2.after.dts" > "Releases/dts/promicro_uf2.pins.diff" || true
 
           # Package
