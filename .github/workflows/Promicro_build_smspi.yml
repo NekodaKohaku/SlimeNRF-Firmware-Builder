@@ -18,7 +18,7 @@ jobs:
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
-      # 使用哪個 SPI 控制器（要換就把 spi3 改成 spi2 等）
+      # 使用哪顆 SPI 控制器
       SPI_LABEL: "spi3"
 
       # --- ピン設定 ---
@@ -38,18 +38,15 @@ jobs:
       INT:  "P0.02"
       VCC:  "P0.31"
 
-      # --- 機能スイッチ ---
+      # 機能スイッチ
       MAGNETOMETER: "enabled"
       SLEEP:        "disabled"
       SENSOR_CLOCK: "enabled"
       EXTRA_ACTIONS: "disabled"
       SW0_BUTTON:   "disabled"
 
-      # Release 是否附上 smspi 的 DTS 原檔方便檢查
+      # release 附檔
       ATTACH_SMSPI_DTS: "enabled"
-
-      # 是否啟用 socs/nrf52840_smspi.overlay（預設 disabled 以避錯）
-      USE_SOC_OVERLAY: "disabled"
 
     steps:
       - name: Acquire code (root)
@@ -62,7 +59,7 @@ jobs:
           git log -1 --pretty=%B >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      - name: Clean landing site
+      - name: Clean Landing Site
         run: sudo rm -rf zephyr-workspace/SlimeNRF-CI
 
       - name: Acquire code (manifest at zephyr-workspace/SlimeNRF-CI)
@@ -119,33 +116,20 @@ jobs:
           cd zephyr-workspace
           printf "\nCONFIG_BUILD_OUTPUT_UF2=y" >> SlimeVR-Tracker-nRF/prj.conf
 
-      - name: Sanity check workspace + list boards
+      - name: Sanity check workspace
         run: |
-          cd zephyr-workspace/SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2 || (echo "board dir missing"; exit 1)
-          echo "== Files in boards/nordic/promicro_uf2 =="
-          ls -la
-          test -f promicro_uf2_smspi.dts && echo "FOUND promicro_uf2_smspi.dts" || (echo "MISSING promicro_uf2_smspi.dts"; exit 1)
-          cd ../../..
-          west boards | sed -n '1,200p' || true
+          ls -la zephyr-workspace
+          test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
 
-      - name: (Optional) Disable or sanitize SOC overlay
-        shell: bash
+      - name: Disable problematic overlay if present (nrf52840_smspi.overlay)
         run: |
-          set -euo pipefail
           cd zephyr-workspace/SlimeVR-Tracker-nRF
-          OVER="socs/nrf52840_smspi.overlay"
-          if [[ -f "$OVER" ]]; then
-            if [[ "${USE_SOC_OVERLAY}" == "disabled" ]]; then
-              echo "Disabling $OVER"
-              mv "$OVER" "$OVER.disabled"
-            else
-              # 基本清理：去 BOM / CRLF（若你想保留 overlay）
-              sed -i '1s/^\xEF\xBB\xBF//' "$OVER" || true
-              sed -i 's/\r$//' "$OVER" || true
-            fi
+          if [ -f "socs/nrf52840_smspi.overlay" ]; then
+            mv socs/nrf52840_smspi.overlay socs/nrf52840_smspi.overlay.disabled
+            echo "Renamed socs/nrf52840_smspi.overlay -> .disabled"
           fi
 
-      # === 核心：SPI + I2C + user pins 覆寫（含 smspi 變體）===
+      # === 核心：SPI + I2C + user pins 一併覆寫 ===
       - name: Apply pin mapping to DTS (SMSPI-aware + I2C)
         shell: bash
         run: |
@@ -164,7 +148,7 @@ jobs:
             pin=$((10#$pin)); echo "$port $pin"
           }
 
-          # 解析所有腳位
+          # 解析腳位
           read MISO_PORT MISO_PIN < <(parse_pin "${MISO}")
           read MOSI_PORT MOSI_PIN < <(parse_pin "${MOSI}")
           read  SCK_PORT  SCK_PIN < <(parse_pin "${SCK}")
@@ -183,12 +167,19 @@ jobs:
             if [[ $port -eq 1 && $pin -gt 15 ]]; then echo "$P: Port 1 supports only 0..15"; exit 1; fi
           done
 
-          # pinctrl 節點樣式
-          default_pat="^[[:space:]]*${SPI_LABEL}_default:[[:space:]]*${SPI_LABEL}_default[[:space:]]*\\{"
-          sleep_pat="^[[:space:]]*${SPI_LABEL}_sleep:[[:space:]]*${SPI_LABEL}_sleep[[:space:]]*\\{"
-          node_pat="^[[:space:]]*&${SPI_LABEL}[[:space:]]*\\{"
+          # pin 衝突提醒（不擋編譯）
+          if [[ $SDA_PORT -eq $MOSI_PORT && $SDA_PIN -eq $MOSI_PIN ]] || \
+             [[ $SCL_PORT -eq $SCK_PORT  && $SCL_PIN -eq $SCK_PIN  ]]; then
+            echo "::warning::I2C pins overlap with SPI pins; change SDA/SCL if you need I2C active together with SPI."
+          fi
 
-          # SPI pinctrl（只改 BASE_DTS）
+          # 針對 spi label 的樣式化樣板
+          label="${SPI_LABEL}"
+          default_pat="^[[:space:]]*${label}_default:[[:space:]]*${label}_default[[:space:]]*\\{"
+          sleep_pat="^[[:space:]]*${label}_sleep:[[:space:]]*${label}_sleep[[:space:]]*\\{"
+          node_pat="^[[:space:]]*&${label}[[:space:]]*\\{"
+
+          # 1) SPI pinctrl 寫在 BASE_DTS
           if grep -qE "${default_pat}" "$BASE_DTS"; then
             sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
             sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
@@ -198,19 +189,19 @@ jobs:
           if grep -qE "${sleep_pat}" "$BASE_DTS"; then
             sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
             sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
-            \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
+            \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
             }" "$BASE_DTS"
           fi
 
-          # I2C pinctrl（在 BASE_DTS）
+          # 2) I2C pinctrl 寫在 BASE_DTS
           if grep -qE "^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{" "$BASE_DTS"; then
             sed -i -E "/^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
           fi
-          if grep -qE "^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{", "$BASE_DTS"; then
+          if grep -qE "^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{" "$BASE_DTS"; then
             sed -i -E "/^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
           fi
 
-          # CS：smspi 變體優先，否則回寫 base
+          # 3) CS 在 smspi 變體優先，否則落在 BASE
           target_for_cs="$BASE_DTS"
           if [[ -f "$VAR_DTS" ]] && grep -qE "${node_pat}" "$VAR_DTS"; then
             target_for_cs="$VAR_DTS"
@@ -220,13 +211,13 @@ jobs:
           \\tcs-gpios = <\\&gpio${CS_PORT} ${CS_PIN} GPIO_ACTIVE_LOW>\\;
           }" "$target_for_cs" || true
 
-          # PWM0 pinctrl（在 BASE_DTS）
+          # 4) PWM0 pinctrl（BASE）
           sed -i -E \
             -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             "$BASE_DTS"
 
-          # buttons / zephyr,user 兩檔都嘗試（節點存在才會動）
+          # 5) buttons / zephyr,user（兩檔都試）
           for DTS in "$BASE_DTS" "$VAR_DTS"; do
             [[ -f "$DTS" ]] || continue
             sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS" || true
@@ -241,7 +232,7 @@ jobs:
 
           echo "=== After patch summary ==="
           echo "[BASE_DTS] $BASE_DTS"
-          grep -nE "${SPI_LABEL}_(default|sleep)|pwm0_(default|sleep)|i2c0_(default|sleep)" "$BASE_DTS" || true
+          grep -nE "spi3_(default|sleep)|pwm0_(default|sleep)|i2c0_(default|sleep)" "$BASE_DTS" || true
           echo "[cs-gpios in BASE/VAR]"
           grep -nE "cs-gpios" "$BASE_DTS" "$VAR_DTS" 2>/dev/null || true
           echo "[user pins]"
@@ -289,7 +280,8 @@ jobs:
             --build-dir SlimeVR-Tracker-nRF/build \
             -- \
             -DNCS_TOOLCHAIN_VERSION=NONE \
-            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
+            -DBOARD_ROOT=../SlimeVR-Tracker-nRF \
+            -DDTC_OVERLAY_FILE=  # 強制清空 overlay
 
           SRC1="SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}"
           SRC2="SlimeVR-Tracker-nRF/build/zephyr/zephyr.${FILEFORMAT}"
