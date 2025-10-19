@@ -18,7 +18,7 @@ jobs:
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
-      # 目標板（會自動用 promicro_uf2_smspi.dts 與 socs/nrf52840_smspi.overlay）
+      # 目標板（會自動用 boards/.../promicro_uf2_smspi.dts 與 socs/nrf52840_smspi.overlay）
       BOARD: "promicro_uf2/nrf52840/smspi"
 
       # 使用哪個 SPI 控制器（要換別顆改這裡，例如 spi2）
@@ -118,12 +118,45 @@ jobs:
           test -f zephyr-workspace/SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2_smspi.dts || (echo "promicro_uf2_smspi.dts missing"; exit 1)
           test -f zephyr-workspace/SlimeVR-Tracker-nRF/socs/nrf52840_smspi.overlay || (echo "socs/nrf52840_smspi.overlay missing"; exit 1)
 
-      - name: Normalize smSPI overlay file (strip BOM / CRLF)
+      # —— 關鍵：把 overlay 強制清成乾淨的 UTF-8/LF，並移除「...」那種垃圾行 ——
+      - name: Normalize smSPI overlay file (force UTF-8 + LF + strip ...)
         run: |
           cd zephyr-workspace/SlimeVR-Tracker-nRF
-          python3 -c "from pathlib import Path; p=Path('socs/nrf52840_smspi.overlay'); b=p.read_bytes(); b=b[3:] if b.startswith(b'\xef\xbb\xbf') else b; b=b.replace(b'\r\n',b'\n').replace(b'\r',b'\n'); p.write_bytes(b)"
-          head -c 16 socs/nrf52840_smspi.overlay | hexdump -C || true
+          OF="socs/nrf52840_smspi.overlay"
+          python3 - <<'PY'
+from pathlib import Path
+p = Path("socs/nrf52840_smspi.overlay")
+b = p.read_bytes()
+# 去 BOM
+if b.startswith(b"\xef\xbb\xbf"):
+    b = b[3:]
+# 嘗試各種常見編碼 -> 統一回 UTF-8 字串
+for enc in ("utf-8","utf-16","utf-16le","utf-16be","utf-32","utf-32le","utf-32be"):
+    try:
+        s = b.decode(enc)
+        break
+    except UnicodeDecodeError:
+        continue
+else:
+    s = b.decode("utf-8","replace")
+# 換行正規化
+s = s.replace("\r\n","\n").replace("\r","\n")
+# 移除 NUL
+s = s.replace("\x00","")
+# **移除只有 '...' 的垃圾行（造成 dtc parse error）**
+lines = []
+for line in s.splitlines():
+    if line.strip() == "...":
+        continue
+    lines.append(line)
+s = "\n".join(lines) + "\n"
+p.write_text(s, encoding="utf-8", newline="\n")
+print("overlay normalized. bytes:", len(s.encode()))
+PY
+          file -bi "$OF" || true
+          nl -ba "$OF" | sed -n '1,60p' || true
 
+      # === SPI + I2C + user pins 覆寫（不動 overlay） ===
       - name: Apply pin mapping to DTS (SMSPI-aware + I2C)
         shell: bash
         run: |
@@ -175,7 +208,7 @@ jobs:
             if grep -qE "${sleep_pat}" "$BASE_DTS"; then
               sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
               sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
-              \\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
+              \\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
               }" "$BASE_DTS"
             fi
           fi
