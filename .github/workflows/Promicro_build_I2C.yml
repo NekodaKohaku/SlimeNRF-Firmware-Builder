@@ -103,7 +103,6 @@ jobs:
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
 
-      # ===== 新增：DTS 修改前快照（供 diff 與釋出） =====
       - name: Snapshot DTS (before change)
         shell: bash
         run: |
@@ -124,11 +123,9 @@ jobs:
             local s="$1"
             local port pin
             if [[ $s =~ ^P?([01])\.([0-9]{1,2})$ ]]; then
-              port="${BASH_REMATCH[1]}"
-              pin="${BASH_REMATCH[2]}"
+              port="${BASH_REMATCH[1]}"; pin="${BASH_REMATCH[2]}"
             elif [[ $s =~ ^([0-9]{1,2})$ ]]; then
-              port="0"
-              pin="${BASH_REMATCH[1]}"
+              port="0"; pin="${BASH_REMATCH[1]}"
             else
               echo "Invalid pin: $s" >&2; exit 1
             fi
@@ -165,20 +162,16 @@ jobs:
             "$DTS"
 
           # SW0
-          sed -i -E \
-            "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" \
-            "$DTS"
+          sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS"
 
           # LED / CLK / INT / VCC
-          sed -i -E \
-            "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ { \
-              s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#; \
-              s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <\\&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#; \
-              s#(clk-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#; \
-              s#(int0-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${INT_PORT} ${INT_PIN}#; \
-              s#(vcc-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${VCC_PORT} ${VCC_PIN}#; \
-            }" \
-            "$DTS"
+          sed -i -E "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ {
+            s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#;
+            s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <\\&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#;
+            s#(clk-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#;
+            s#(int0-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${INT_PORT} ${INT_PIN}#;
+            s#(vcc-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${VCC_PORT} ${VCC_PIN}#;
+          }" "$DTS"
 
       - name: Enable External Sensor Clock
         if: env.SENSOR_CLOCK == 'enabled'
@@ -254,12 +247,11 @@ jobs:
           replace='// sw0 ='
           sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
 
-      - name: Build SlimeVR-Tracker-nRF
+      - name: Build SlimeVR-Tracker-nRF (I2C)
         run: |
           cd zephyr-workspace
           rm -rf SlimeVR-Tracker-nRF/build
           mkdir -p SlimeVR-Tracker-nRF/build
-
           west build \
             --board "$BOARD" \
             --pristine=always SlimeVR-Tracker-nRF \
@@ -279,50 +271,26 @@ jobs:
 
           mv "$SRC" "Releases/$OUTPUT_NAME.${FILEFORMAT}"
 
-      - name: Generate effective DTS
-        run: |
-          cd zephyr-workspace
-          west build -t dts --build-dir SlimeVR-Tracker-nRF/build || true
-
-      - name: Collect DTS & Diff, then Package
+      - name: Collect DTS (before/after) & Diff, then Package
         shell: bash
         run: |
           set -euo pipefail
           cd zephyr-workspace
-
           mkdir -p Releases/dts
           DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+
           cp "$DTS" "Releases/dts/promicro_uf2.after.dts"
 
-          EFF_DTS="SlimeVR-Tracker-nRF/build/zephyr/zephyr.dts"
-          EFF_DTB="SlimeVR-Tracker-nRF/build/zephyr/zephyr.dtb"
-          if [[ -f "$EFF_DTS" ]]; then
-            cp "$EFF_DTS" "Releases/dts/effective_zephyr.dts"
-          elif [[ -f "$EFF_DTB" ]]; then
-            dtc -I dtb -O dts -o "Releases/dts/effective_zephyr.dts" "$EFF_DTB"
+          if [[ -f "Releases/dts/promicro_uf2.before.dts" ]]; then
+            diff -u "Releases/dts/promicro_uf2.before.dts" "Releases/dts/promicro_uf2.after.dts" > "Releases/dts/promicro_uf2.pins.diff" || true
           else
-            echo "WARN: zephyr.dts / zephyr.dtb not found，pass effective_zephyr.dts"
+            echo "WARN: promicro_uf2.before.dts not found, skipping diff"
           fi
 
-          diff -u "Releases/dts/promicro_uf2.before.dts" "Releases/dts/promicro_uf2.after.dts" > "Releases/dts/promicro_uf2.pins.diff" || true
-
           tar -czf "Releases/${OUTPUT_NAME}_DTS.tgz" -C Releases dts
-
           ls -la Releases
 
       - name: Upload Artifact (UF2)
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
-          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
-
-      - name: Upload Artifact (DTS package)
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.OUTPUT_NAME }}_DTS.tgz
-          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
-
-      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
@@ -342,7 +310,7 @@ jobs:
           prerelease: false
           name: "Latest Firmware"
           body: |
-            Manual build of the SlimeNRF Tracker Firmware.
+            Manual build of the SlimeNRF Tracker Firmware (I2C).
             Board: ${{ env.BOARD }}
             Features:
               MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
@@ -356,7 +324,6 @@ jobs:
             DTS artifacts:
               - promicro_uf2.before.dts / promicro_uf2.after.dts
               - promicro_uf2.pins.diff (before vs after)
-              - effective_zephyr.dts (post-build)
           files: |
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
