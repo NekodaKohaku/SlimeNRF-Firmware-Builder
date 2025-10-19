@@ -254,7 +254,7 @@ jobs:
           replace='// sw0 ='
           sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
 
-      - name: Build SlimeVR-Tracker-nRF (tracker only)
+      - name: Build SlimeVR-Tracker-nRF
         run: |
           cd zephyr-workspace
           rm -rf SlimeVR-Tracker-nRF/build
@@ -279,19 +279,48 @@ jobs:
 
           mv "$SRC" "Releases/$OUTPUT_NAME.${FILEFORMAT}"
 
+      - name: Generate effective DTS
+        run: |
+          cd zephyr-workspace
+          west build -t dts --build-dir SlimeVR-Tracker-nRF/build || true
+
       - name: Collect DTS & Diff, then Package
         shell: bash
         run: |
           set -euo pipefail
           cd zephyr-workspace
-          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+
           mkdir -p Releases/dts
+          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
           cp "$DTS" "Releases/dts/promicro_uf2.after.dts"
-          EFF="SlimeVR-Tracker-nRF/build/zephyr/zephyr.dts"
-          [ -f "$EFF" ] && cp "$EFF" "Releases/dts/effective_zephyr.dts" || true
+
+          EFF_DTS="SlimeVR-Tracker-nRF/build/zephyr/zephyr.dts"
+          EFF_DTB="SlimeVR-Tracker-nRF/build/zephyr/zephyr.dtb"
+          if [[ -f "$EFF_DTS" ]]; then
+            cp "$EFF_DTS" "Releases/dts/effective_zephyr.dts"
+          elif [[ -f "$EFF_DTB" ]]; then
+            dtc -I dtb -O dts -o "Releases/dts/effective_zephyr.dts" "$EFF_DTB"
+          else
+            echo "WARN: zephyr.dts / zephyr.dtb not found，pass effective_zephyr.dts"
+          fi
+
           diff -u "Releases/dts/promicro_uf2.before.dts" "Releases/dts/promicro_uf2.after.dts" > "Releases/dts/promicro_uf2.pins.diff" || true
-          tar -C Releases -czf "Releases/${OUTPUT_NAME}_DTS.tgz" dts
+
+          tar -czf "Releases/${OUTPUT_NAME}_DTS.tgz" -C Releases dts
+
           ls -la Releases
+
+      - name: Upload Artifact (UF2)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+
+      - name: Upload Artifact (DTS package)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_NAME }}_DTS.tgz
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
