@@ -103,6 +103,16 @@ jobs:
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
 
+      # ===== 新增：DTS 修改前快照（供 diff 與釋出） =====
+      - name: Snapshot DTS (before change)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+          mkdir -p Releases/dts
+          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+          cp "$DTS" "Releases/dts/promicro_uf2.before.dts"
+
       - name: Apply pin mapping to DTS
         shell: bash
         run: |
@@ -142,7 +152,7 @@ jobs:
             fi
           done
 
-          # SLEEP
+          # I2C0 pinctrl（default/sleep）
           sed -i -E \
             -e "/^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" \
             -e "/^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/     s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" \
@@ -269,11 +279,31 @@ jobs:
 
           mv "$SRC" "Releases/$OUTPUT_NAME.${FILEFORMAT}"
 
+      - name: Collect DTS & Diff, then Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+          mkdir -p Releases/dts
+          cp "$DTS" "Releases/dts/promicro_uf2.after.dts"
+          EFF="SlimeVR-Tracker-nRF/build/zephyr/zephyr.dts"
+          [ -f "$EFF" ] && cp "$EFF" "Releases/dts/effective_zephyr.dts" || true
+          diff -u "Releases/dts/promicro_uf2.before.dts" "Releases/dts/promicro_uf2.after.dts" > "Releases/dts/promicro_uf2.pins.diff" || true
+          tar -C Releases -czf "Releases/${OUTPUT_NAME}_DTS.tgz" dts
+          ls -la Releases
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
           path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+
+      - name: Upload Artifact (DTS package)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_NAME }}_DTS.tgz
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
 
       - name: Create/Update Github Release
         uses: mini-bomba/create-github-release@v1.2.0
@@ -294,6 +324,11 @@ jobs:
               PWM0=${{ env.PWM0 }}, SW0=${{ env.SW0 }}
               LED=${{ env.LED }}, CLK=${{ env.CLK }}
               INT=${{ env.INT }}, VCC=${{ env.VCC }}
+            DTS artifacts:
+              - promicro_uf2.before.dts / promicro_uf2.after.dts
+              - promicro_uf2.pins.diff (before vs after)
+              - effective_zephyr.dts (post-build)
           files: |
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+            zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
           clear_attachments: true
