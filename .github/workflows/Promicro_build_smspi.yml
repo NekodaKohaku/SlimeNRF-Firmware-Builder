@@ -34,7 +34,7 @@ jobs:
       MAGNETOMETER: "enabled"
       SLEEP:        "enabled"
       SENSOR_CLOCK: "disabled"
-      EXTRA_ACTIONS:"enabled"
+      EXTRA_ACTIONS: "enabled"
       SW0_BUTTON:   "disabled"
 
     steps:
