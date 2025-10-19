@@ -22,15 +22,20 @@ jobs:
       SPI_LABEL: "spi3"
 
       # --- ピン設定 ---
-      MISO: "P0.24"
-      MOSI: "P0.06"
-      SCK:  "P0.08"
-      CS:   "P0.22"
+      # SPI
+      MISO: "P0.22"
+      MOSI: "P0.20"
+      SCK:  "P0.17"
+      CS:   "P0.24"
+      # I2C
+      SDA:  "P1.13"
+      SCL:  "P1.15"
+      # 汎用
       PWM0: "P0.15"
       SW0:  "P1.00"
       LED:  "P0.15"
-      CLK:  "P0.20"
-      INT:  "P0.17"
+      CLK:  "P1.11"
+      INT:  "P0.02"
       VCC:  "P0.31"
 
       # --- 機能スイッチ ---
@@ -40,7 +45,7 @@ jobs:
       EXTRA_ACTIONS: "disabled"
       SW0_BUTTON:   "disabled"
 
-      # 是否把 smspi DTS 也附到 Release
+      # --- logs / release 附檔 ---
       ATTACH_SMSPI_DTS: "enabled"
 
     steps:
@@ -116,8 +121,8 @@ jobs:
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
 
-      # === 核心：pin 改寫 ===
-      - name: Apply pin mapping to DTS (SMSPI-aware)
+      # === 核心：SPI + I2C + user pins 一併覆寫 ===
+      - name: Apply pin mapping to DTS (SMSPI-aware + I2C)  # NEW
         shell: bash
         run: |
           set -euo pipefail
@@ -135,10 +140,13 @@ jobs:
             pin=$((10#$pin)); echo "$port $pin"
           }
 
+          # 解析所有腳位
           read MISO_PORT MISO_PIN < <(parse_pin "${MISO}")
           read MOSI_PORT MOSI_PIN < <(parse_pin "${MOSI}")
           read  SCK_PORT  SCK_PIN < <(parse_pin "${SCK}")
           read   CS_PORT   CS_PIN < <(parse_pin "${CS}")
+          read  SDA_PORT  SDA_PIN < <(parse_pin "${SDA}")   # NEW
+          read  SCL_PORT  SCL_PIN < <(parse_pin "${SCL}")   # NEW
           read PWM0_PORT PWM0_PIN < <(parse_pin "${PWM0}")
           read  SW0_PORT  SW0_PIN < <(parse_pin "${SW0}")
           read  LED_PORT  LED_PIN < <(parse_pin "${LED}")
@@ -146,17 +154,23 @@ jobs:
           read  INT_PORT  INT_PIN < <(parse_pin "${INT}")
           read  VCC_PORT  VCC_PIN < <(parse_pin "${VCC}")
 
-          for P in MISO MOSI SCK CS PWM0 SW0 LED CLK INT VCC; do
+          for P in MISO MOSI SCK CS SDA SCL PWM0 SW0 LED CLK INT VCC; do
             eval port=\$${P}_PORT pin=\$${P}_PIN
             if [[ $port -eq 1 && $pin -gt 15 ]]; then echo "$P: Port 1 supports only 0..15"; exit 1; fi
           done
+
+          # 簡單衝突提示（不擋編譯） // NEW
+          if [[ $SDA_PORT -eq $MOSI_PORT && $SDA_PIN -eq $MOSI_PIN ]] || \
+             [[ $SCL_PORT -eq $SCK_PORT  && $SCL_PIN -eq $SCK_PIN  ]]; then
+            echo "::warning::I2C pins overlap with SPI pins; change SDA/SCL if you need I2C alive together with SPI."
+          fi
 
           label="${SPI_LABEL}"
           default_pat="^[[:space:]]*${label}_default:[[:space:]]*${label}_default[[:space:]]*\\{"
           sleep_pat="^[[:space:]]*${label}_sleep:[[:space:]]*${label}_sleep[[:space:]]*\\{"
           node_pat="^[[:space:]]*&${label}[[:space:]]*\\{"
 
-          # 1) pinctrl（psels）只寫 BASE_DTS（pinctrl 定義在這）
+          # --- SPI pinctrl（psels）寫在 BASE_DTS ---
           if grep -qE "${default_pat}" "$BASE_DTS"; then
             sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
             sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
@@ -170,13 +184,15 @@ jobs:
             }" "$BASE_DTS"
           fi
 
-          # PWM0 pinctrl 也改在 BASE_DTS
-          sed -i -E \
-            -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
-            -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
-            "$BASE_DTS"
+          # --- I2C pinctrl（i2c0_default/sleep）也寫在 BASE_DTS ---  // NEW
+          if grep -qE "^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{" "$BASE_DTS"; then
+            sed -i -E "/^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
+          fi
+          if grep -qE "^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{" "$BASE_DTS"; then
+            sed -i -E "/^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
+          fi
 
-          # 2) cs-gpios：優先寫 VAR_DTS（smspi），沒有就寫 BASE_DTS
+          # --- &spiX 的 cs-gpios：優先寫 VAR_DTS（smspi），沒有就寫 BASE_DTS ---
           target_for_cs="$BASE_DTS"
           if [[ -f "$VAR_DTS" ]] && grep -qE "${node_pat}" "$VAR_DTS"; then
             target_for_cs="$VAR_DTS"
@@ -186,7 +202,13 @@ jobs:
           \\tcs-gpios = <\\&gpio${CS_PORT} ${CS_PIN} GPIO_ACTIVE_LOW>\\;
           }" "$target_for_cs" || true
 
-          # 3) buttons / zephyr,user：兩檔都嘗試寫入（節點存在才會變動）
+          # --- PWM0 pinctrl（在 BASE_DTS） ---
+          sed -i -E \
+            -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
+            -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
+            "$BASE_DTS"
+
+          # --- buttons / zephyr,user：兩檔都嘗試寫入 ---
           for DTS in "$BASE_DTS" "$VAR_DTS"; do
             [[ -f "$DTS" ]] || continue
             sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS" || true
@@ -201,7 +223,7 @@ jobs:
 
           echo "=== After patch summary ==="
           echo "[BASE_DTS] $BASE_DTS"
-          grep -nE "spi3_(default|sleep)|pwm0_(default|sleep)" "$BASE_DTS" || true
+          grep -nE "spi3_(default|sleep)|pwm0_(default|sleep)|i2c0_(default|sleep)" "$BASE_DTS" || true
           echo "[cs-gpios in BASE/VAR]"
           grep -nE "cs-gpios" "$BASE_DTS" "$VAR_DTS" 2>/dev/null || true
           echo "[user pins]"
@@ -301,8 +323,9 @@ jobs:
               MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
               CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
               SW0=${{ env.SW0_BUTTON }}
-            Pins (SMSPI):
+            Pins (SMSPI + I2C):
               MISO=${{ env.MISO }}, MOSI=${{ env.MOSI }}, SCK=${{ env.SCK }}, CS=${{ env.CS }}
+              SDA=${{ env.SDA }}, SCL=${{ env.SCL }}
               PWM0=${{ env.PWM0 }}, SW0=${{ env.SW0 }}
               LED=${{ env.LED }}, CLK=${{ env.CLK }}
               INT=${{ env.INT }}, VCC=${{ env.VCC }}
