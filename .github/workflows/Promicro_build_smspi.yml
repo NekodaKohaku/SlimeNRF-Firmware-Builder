@@ -104,7 +104,6 @@ jobs:
           echo "BOARD=${BOARD_PREFIX}smspi" >> $GITHUB_ENV
           echo "OUTPUT_NAME=${FILENAME_PREFIX}smSPI_Mag_ProMicro" >> $GITHUB_ENV
 
-      # 一律輸出 UF2
       - name: Force UF2 output (Kconfig)
         run: |
           cd zephyr-workspace
@@ -115,7 +114,6 @@ jobs:
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
 
-      # === 新增：修改前快照（供 diff 與釋出） ===
       - name: Snapshot DTS (before change)
         shell: bash
         run: |
@@ -191,6 +189,10 @@ jobs:
           cd zephyr-workspace
           sed -i "s|//[[:space:]]*clk-gpios|clk-gpios|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
           printf "\nCONFIG_USE_SENSOR_CLOCK=y" >> SlimeVR-Tracker-nRF/prj.conf
+          OVERLAY="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2_smspi.dts"
+          if [ -f "$OVERLAY" ]; then
+            sed -i -E 's|^[[:space:]]*/delete-property/[[:space:]]*clk-gpios;|// /delete-property/ clk-gpios;|' "$OVERLAY"
+          fi
 
       - name: Disable External Sensor Clock
         if: env.SENSOR_CLOCK == 'disabled'
@@ -198,6 +200,10 @@ jobs:
           cd zephyr-workspace
           sed -i "s|clk-gpios[[:space:]]*=|// clk-gpios =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
           printf "\nCONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
+          OVERLAY="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2_smspi.dts"
+          if [ -f "$OVERLAY" ]; then
+            sed -i -E 's|^[[:space:]]*//[[:space:]]*/delete-property/[[:space:]]*clk-gpios;|/delete-property/ clk-gpios;|' "$OVERLAY"
+          fi
 
       - name: Enable/Disable feature toggles
         run: |
