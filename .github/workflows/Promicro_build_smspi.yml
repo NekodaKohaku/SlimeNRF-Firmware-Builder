@@ -18,7 +18,7 @@ jobs:
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
-      # 使用哪顆 SPI 控制器
+      # 哪個 SPI 控制器（需要改用別顆就換成 spi2 等）
       SPI_LABEL: "spi3"
 
       # --- ピン設定 ---
@@ -38,14 +38,14 @@ jobs:
       INT:  "P0.02"
       VCC:  "P0.31"
 
-      # 機能スイッチ
+      # --- 機能スイッチ ---
       MAGNETOMETER: "enabled"
       SLEEP:        "disabled"
       SENSOR_CLOCK: "enabled"
       EXTRA_ACTIONS: "disabled"
       SW0_BUTTON:   "disabled"
 
-      # release 附檔
+      # --- logs / release 附檔 ---
       ATTACH_SMSPI_DTS: "enabled"
 
     steps:
@@ -110,27 +110,19 @@ jobs:
         run: |
           echo "BOARD=${BOARD_PREFIX}smspi" >> $GITHUB_ENV
           echo "OUTPUT_NAME=${FILENAME_PREFIX}SMSPI_ProMicro" >> $GITHUB_ENV
+          echo "BOARD_FULL=${BOARD_PREFIX}smspi" >> $GITHUB_ENV
 
       - name: Force UF2 output (Kconfig)
         run: |
           cd zephyr-workspace
           printf "\nCONFIG_BUILD_OUTPUT_UF2=y" >> SlimeVR-Tracker-nRF/prj.conf
 
-      - name: Sanity check workspace
+      - name: Sanity check workspace (board + overlay present)
         run: |
-          ls -la zephyr-workspace
-          test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
+          test -f zephyr-workspace/SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2_smspi.dts || (echo "promicro_uf2_smspi.dts missing"; exit 1)
+          test -f zephyr-workspace/SlimeVR-Tracker-nRF/socs/nrf52840_smspi.overlay || (echo "socs/nrf52840_smspi.overlay missing"; exit 1)
 
-      # 關掉 smspi 的 overlay，避免 DTC 解析它
-      - name: Disable problematic overlay if present (nrf52840_smspi.overlay)
-        run: |
-          cd zephyr-workspace/SlimeVR-Tracker-nRF
-          if [ -f "socs/nrf52840_smspi.overlay" ]; then
-            mv socs/nrf52840_smspi.overlay socs/nrf52840_smspi.overlay.disabled
-            echo "Renamed socs/nrf52840_smspi.overlay -> .disabled"
-          fi
-
-      # === 核心：SPI + I2C + user pins 一併覆寫 ===
+      # === 核心：SPI + I2C + user pins 一併覆寫（保留 overlay，不動它） ===
       - name: Apply pin mapping to DTS (SMSPI-aware + I2C)
         shell: bash
         run: |
@@ -149,7 +141,7 @@ jobs:
             pin=$((10#$pin)); echo "$port $pin"
           }
 
-          # 解析腳位
+          # 解析所有腳位
           read MISO_PORT MISO_PIN < <(parse_pin "${MISO}")
           read MOSI_PORT MOSI_PIN < <(parse_pin "${MOSI}")
           read  SCK_PORT  SCK_PIN < <(parse_pin "${SCK}")
@@ -168,57 +160,59 @@ jobs:
             if [[ $port -eq 1 && $pin -gt 15 ]]; then echo "$P: Port 1 supports only 0..15"; exit 1; fi
           done
 
-          # pin 衝突提醒（不擋編譯）
-          if [[ $SDA_PORT -eq $MOSI_PORT && $SDA_PIN -eq $MOSI_PIN ]] || \
-             [[ $SCL_PORT -eq $SCK_PORT  && $SCL_PIN -eq $SCK_PIN  ]]; then
-            echo "::warning::I2C pins overlap with SPI pins; change SDA/SCL if you need I2C active together with SPI."
-          fi
-
-          # spi label 樣式
+          # 產生 pattern（之前報 unbound 這裡補上）
           label="${SPI_LABEL}"
           default_pat="^[[:space:]]*${label}_default:[[:space:]]*${label}_default[[:space:]]*\\{"
           sleep_pat="^[[:space:]]*${label}_sleep:[[:space:]]*${label}_sleep[[:space:]]*\\{"
           node_pat="^[[:space:]]*&${label}[[:space:]]*\\{"
 
-          # 1) SPI pinctrl 寫在 BASE_DTS
-          if grep -qE "${default_pat}" "$BASE_DTS"; then
-            sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
-            sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
-            \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
-            }" "$BASE_DTS"
-          fi
-          if grep -qE "${sleep_pat}" "$BASE_DTS"; then
-            sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
-            sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
-            \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
-            }" "$BASE_DTS"
-          fi
-
-          # 2) I2C pinctrl 寫在 BASE_DTS
-          if grep -qE "^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{" "$BASE_DTS"; then
-            sed -i -E "/^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
-          fi
-          if grep -qE "^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{", "$BASE_DTS"; then
-            sed -i -E "/^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
+          # -------- SPI pinctrl: 改 BASE_DTS 的 pinctrl（psels） --------
+          if [[ -f "$BASE_DTS" ]]; then
+            if grep -qE "${default_pat}" "$BASE_DTS"; then
+              sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
+              sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
+              \\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
+              }" "$BASE_DTS"
+            fi
+            if grep -qE "${sleep_pat}" "$BASE_DTS"; then
+              sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
+              sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
+              \\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
+              }" "$BASE_DTS"
+            fi
           fi
 
-          # 3) CS 在 smspi 變體優先，否則落在 BASE
+          # -------- I2C pinctrl: 改 BASE_DTS 的 i2c0_default/sleep --------
+          if [[ -f "$BASE_DTS" ]]; then
+            if grep -qE "^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{" "$BASE_DTS"; then
+              sed -i -E "/^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
+            fi
+            if grep -qE "^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{" "$BASE_DTS"; then
+              sed -i -E "/^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
+            fi
+          fi
+
+          # -------- cs-gpios: 優先寫 VAR_DTS（smspi 有 &spi3 節點），否則寫 BASE_DTS --------
           target_for_cs="$BASE_DTS"
           if [[ -f "$VAR_DTS" ]] && grep -qE "${node_pat}" "$VAR_DTS"; then
             target_for_cs="$VAR_DTS"
           fi
-          sed -i -E "/${node_pat}/,/^[[:space:]]*\\};/ {/cs-gpios[[:space:]]*=/,/;/d}" "$target_for_cs" || true
-          sed -i -E "/${node_pat}/{n; a\\
-          \\tcs-gpios = <\\&gpio${CS_PORT} ${CS_PIN} GPIO_ACTIVE_LOW>\\;
-          }" "$target_for_cs" || true
+          if [[ -f "$target_for_cs" ]]; then
+            sed -i -E "/${node_pat}/,/^[[:space:]]*\\};/ {/cs-gpios[[:space:]]*=/,/;/d}" "$target_for_cs" || true
+            sed -i -E "/${node_pat}/{n; a\\
+            \\tcs-gpios = <\\&gpio${CS_PORT} ${CS_PIN} GPIO_ACTIVE_LOW>\\;
+            }" "$target_for_cs" || true
+          fi
 
-          # 4) PWM0 pinctrl（BASE）
-          sed -i -E \
-            -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
-            -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
-            "$BASE_DTS"
+          # -------- PWM0 pinctrl: 改 BASE_DTS --------
+          if [[ -f "$BASE_DTS" ]]; then
+            sed -i -E \
+              -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
+              -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
+              "$BASE_DTS"
+          fi
 
-          # 5) buttons / zephyr,user（兩檔都試）
+          # -------- buttons / zephyr,user: 兩檔都嘗試寫入（節點存在才會變動） --------
           for DTS in "$BASE_DTS" "$VAR_DTS"; do
             [[ -f "$DTS" ]] || continue
             sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS" || true
@@ -275,18 +269,13 @@ jobs:
           cd zephyr-workspace
           rm -rf SlimeVR-Tracker-nRF/build
           mkdir -p SlimeVR-Tracker-nRF/build
-
-          # 關鍵：確保 DTC_OVERLAY_FILE 不存在（不是空字串）
-          unset DTC_OVERLAY_FILE || true
-
-          env -u DTC_OVERLAY_FILE west build \
-            --board "$BOARD" \
+          west build \
+            --board "$BOARD_FULL" \
             --pristine=always SlimeVR-Tracker-nRF \
             --build-dir SlimeVR-Tracker-nRF/build \
             -- \
             -DNCS_TOOLCHAIN_VERSION=NONE \
             -DBOARD_ROOT=../SlimeVR-Tracker-nRF
-
           SRC1="SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}"
           SRC2="SlimeVR-Tracker-nRF/build/zephyr/zephyr.${FILEFORMAT}"
           if   [ -f "$SRC1" ]; then SRC="$SRC1";
@@ -332,7 +321,7 @@ jobs:
           name: "Latest Firmware"
           body: |
             Manual build of the SlimeNRF Tracker Firmware.
-            Board: ${{ env.BOARD }}
+            Board: ${{ env.BOARD_FULL }}
             Features:
               MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
               CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
