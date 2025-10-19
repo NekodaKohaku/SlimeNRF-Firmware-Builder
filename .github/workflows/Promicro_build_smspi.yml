@@ -121,7 +121,7 @@ jobs:
       - name: Normalize smSPI overlay file (strip BOM / CRLF)
         run: |
           cd zephyr-workspace/SlimeVR-Tracker-nRF
-          python3 -c "from pathlib import Path; p=Path('socs/nrf52840_smspi.overlay'); b=p.read_bytes(); b=b[3:] if b.startswith(b'\xef\xbb\xbf') else b; b=b.replace(b'\r\n','\n').replace(b'\r','\n'); p.write_bytes(b)"
+          python3 -c "from pathlib import Path; p=Path('socs/nrf52840_smspi.overlay'); b=p.read_bytes(); b=b[3:] if b.startswith(b'\xef\xbb\xbf') else b; b=b.replace(b'\r\n',b'\n').replace(b'\r',b'\n'); p.write_bytes(b)"
           head -c 16 socs/nrf52840_smspi.overlay | hexdump -C || true
 
       - name: Apply pin mapping to DTS (SMSPI-aware + I2C)
@@ -175,7 +175,7 @@ jobs:
             if grep -qE "${sleep_pat}" "$BASE_DTS"; then
               sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
               sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
-              \\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
+              \\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
               }" "$BASE_DTS"
             fi
           fi
