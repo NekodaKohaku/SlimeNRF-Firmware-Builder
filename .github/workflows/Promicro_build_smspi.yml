@@ -121,6 +121,7 @@ jobs:
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
 
+      # 關掉 smspi 的 overlay，避免 DTC 解析它
       - name: Disable problematic overlay if present (nrf52840_smspi.overlay)
         run: |
           cd zephyr-workspace/SlimeVR-Tracker-nRF
@@ -280,8 +281,7 @@ jobs:
             --build-dir SlimeVR-Tracker-nRF/build \
             -- \
             -DNCS_TOOLCHAIN_VERSION=NONE \
-            -DBOARD_ROOT=../SlimeVR-Tracker-nRF \
-            -DDTC_OVERLAY_FILE=  # 強制清空 overlay
+            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
 
           SRC1="SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}"
           SRC2="SlimeVR-Tracker-nRF/build/zephyr/zephyr.${FILEFORMAT}"
