@@ -18,7 +18,7 @@ jobs:
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
-      # 使用哪個 SPI 控制器（要換就改成 spi2 等）
+      # 使用哪個 SPI 控制器（要換就把 spi3 改成 spi2 等）
       SPI_LABEL: "spi3"
 
       # --- ピン設定 ---
@@ -47,6 +47,9 @@ jobs:
 
       # Release 是否附上 smspi 的 DTS 原檔方便檢查
       ATTACH_SMSPI_DTS: "enabled"
+
+      # 是否啟用 socs/nrf52840_smspi.overlay（預設 disabled 以避錯）
+      USE_SOC_OVERLAY: "disabled"
 
     steps:
       - name: Acquire code (root)
@@ -121,11 +124,26 @@ jobs:
           cd zephyr-workspace/SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2 || (echo "board dir missing"; exit 1)
           echo "== Files in boards/nordic/promicro_uf2 =="
           ls -la
-          echo "== Look for promicro_uf2_smspi.dts =="
           test -f promicro_uf2_smspi.dts && echo "FOUND promicro_uf2_smspi.dts" || (echo "MISSING promicro_uf2_smspi.dts"; exit 1)
           cd ../../..
-          echo "== west boards (first 200 lines) =="
           west boards | sed -n '1,200p' || true
+
+      - name: (Optional) Disable or sanitize SOC overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace/SlimeVR-Tracker-nRF
+          OVER="socs/nrf52840_smspi.overlay"
+          if [[ -f "$OVER" ]]; then
+            if [[ "${USE_SOC_OVERLAY}" == "disabled" ]]; then
+              echo "Disabling $OVER"
+              mv "$OVER" "$OVER.disabled"
+            else
+              # 基本清理：去 BOM / CRLF（若你想保留 overlay）
+              sed -i '1s/^\xEF\xBB\xBF//' "$OVER" || true
+              sed -i 's/\r$//' "$OVER" || true
+            fi
+          fi
 
       # === 核心：SPI + I2C + user pins 覆寫（含 smspi 變體）===
       - name: Apply pin mapping to DTS (SMSPI-aware + I2C)
@@ -165,12 +183,12 @@ jobs:
             if [[ $port -eq 1 && $pin -gt 15 ]]; then echo "$P: Port 1 supports only 0..15"; exit 1; fi
           done
 
-          # 和 Zephyr 的 board target 規則對齊的樣式（**這三個是之前漏掉的重點**）
+          # pinctrl 節點樣式
           default_pat="^[[:space:]]*${SPI_LABEL}_default:[[:space:]]*${SPI_LABEL}_default[[:space:]]*\\{"
           sleep_pat="^[[:space:]]*${SPI_LABEL}_sleep:[[:space:]]*${SPI_LABEL}_sleep[[:space:]]*\\{"
           node_pat="^[[:space:]]*&${SPI_LABEL}[[:space:]]*\\{"
 
-          # SPI pinctrl（只改 BASE_DTS，pinctrl 定義在這）
+          # SPI pinctrl（只改 BASE_DTS）
           if grep -qE "${default_pat}" "$BASE_DTS"; then
             sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
             sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
@@ -180,7 +198,7 @@ jobs:
           if grep -qE "${sleep_pat}" "$BASE_DTS"; then
             sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
             sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
-            \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
+            \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
             }" "$BASE_DTS"
           fi
 
@@ -188,11 +206,11 @@ jobs:
           if grep -qE "^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{" "$BASE_DTS"; then
             sed -i -E "/^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
           fi
-          if grep -qE "^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{" "$BASE_DTS"; then
+          if grep -qE "^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{", "$BASE_DTS"; then
             sed -i -E "/^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
           fi
 
-          # CS 改在 smspi 變體優先，否則回寫 base
+          # CS：smspi 變體優先，否則回寫 base
           target_for_cs="$BASE_DTS"
           if [[ -f "$VAR_DTS" ]] && grep -qE "${node_pat}" "$VAR_DTS"; then
             target_for_cs="$VAR_DTS"
