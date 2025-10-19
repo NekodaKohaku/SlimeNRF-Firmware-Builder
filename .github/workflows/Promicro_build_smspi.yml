@@ -1,4 +1,4 @@
-name: Build SlimeNRF Tracker (SPI)
+name: Build SlimeNRF Tracker (smSPI)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,10 @@ jobs:
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
-      # --- ピン設定---
+      # 哪個 SPI 控制器（需要改用別顆就換成 spi2 等）
+      SPI_LABEL: "spi3"
+
+      # --- ピン設定 ---
       MISO: "P0.24"
       MOSI: "P0.06"
       SCK:  "P0.08"
@@ -30,12 +33,15 @@ jobs:
       INT:  "P0.17"
       VCC:  "P0.31"
 
-      # --- 機能スイッチ---
+      # --- 機能スイッチ ---
       MAGNETOMETER: "enabled"
       SLEEP:        "disabled"
       SENSOR_CLOCK: "enabled"
       EXTRA_ACTIONS: "disabled"
       SW0_BUTTON:   "disabled"
+
+      # 是否把 smspi DTS 也附到 Release
+      ATTACH_SMSPI_DTS: "enabled"
 
     steps:
       - name: Acquire code (root)
@@ -95,12 +101,11 @@ jobs:
           rm -rf Releases
           mkdir Releases
 
-      - name: Derive names (SPI)
+      - name: Derive names (SMSPI)
         run: |
-          echo "BOARD=${BOARD_PREFIX}spi" >> $GITHUB_ENV
-          echo "OUTPUT_NAME=${FILENAME_PREFIX}SPI_ProMicro" >> $GITHUB_ENV
+          echo "BOARD=${BOARD_PREFIX}smspi" >> $GITHUB_ENV
+          echo "OUTPUT_NAME=${FILENAME_PREFIX}SMSPI_ProMicro" >> $GITHUB_ENV
 
-      # 常に UF2 を出す
       - name: Force UF2 output (Kconfig)
         run: |
           cd zephyr-workspace
@@ -111,25 +116,23 @@ jobs:
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
 
-      - name: Apply pin mapping to DTS
+      # === 核心：pin 改寫 ===
+      - name: Apply pin mapping to DTS (SMSPI-aware)
         shell: bash
         run: |
           set -euo pipefail
           cd zephyr-workspace
-          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+
+          DTS_DIR="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2"
+          BASE_DTS="$DTS_DIR/promicro_uf2.dts"
+          VAR_DTS="$DTS_DIR/promicro_uf2_smspi.dts"
 
           parse_pin() {
-            local s="$1"
-            local port pin
-            if [[ $s =~ ^P?([01])\.([0-9]{1,2})$ ]]; then
-              port="${BASH_REMATCH[1]}"; pin="${BASH_REMATCH[2]}"
-            elif [[ $s =~ ^([0-9]{1,2})$ ]]; then
-              port="0"; pin="${BASH_REMATCH[1]}"
-            else
-              echo "Invalid pin: $s" >&2; exit 1
-            fi
-            pin=$((10#$pin))
-            echo "$port $pin"
+            local s="$1" port pin
+            if [[ $s =~ ^P?([01])\.([0-9]{1,2})$ ]]; then port="${BASH_REMATCH[1]}"; pin="${BASH_REMATCH[2]}";
+            elif [[ $s =~ ^([0-9]{1,2})$ ]]; then port="0"; pin="${BASH_REMATCH[1]}";
+            else echo "Invalid pin: $s" >&2; exit 1; fi
+            pin=$((10#$pin)); echo "$port $pin"
           }
 
           read MISO_PORT MISO_PIN < <(parse_pin "${MISO}")
@@ -145,53 +148,77 @@ jobs:
 
           for P in MISO MOSI SCK CS PWM0 SW0 LED CLK INT VCC; do
             eval port=\$${P}_PORT pin=\$${P}_PIN
-            if [[ $port -eq 1 && $pin -gt 15 ]]; then
-              echo "$P: Port 1 supports only 0..15"; exit 1
-            fi
+            if [[ $port -eq 1 && $pin -gt 15 ]]; then echo "$P: Port 1 supports only 0..15"; exit 1; fi
           done
 
-          sed -i -E "/^[[:space:]]*spi3_default:[[:space:]]*spi3_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$DTS"
-          sed -i -E "/^[[:space:]]*spi3_default:[[:space:]]*spi3_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
-              psels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>;
-          }" "$DTS"
+          label="${SPI_LABEL}"
+          default_pat="^[[:space:]]*${label}_default:[[:space:]]*${label}_default[[:space:]]*\\{"
+          sleep_pat="^[[:space:]]*${label}_sleep:[[:space:]]*${label}_sleep[[:space:]]*\\{"
+          node_pat="^[[:space:]]*&${label}[[:space:]]*\\{"
 
-          sed -i -E "/^[[:space:]]*spi3_sleep:[[:space:]]*spi3_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$DTS"
-          sed -i -E "/^[[:space:]]*spi3_sleep:[[:space:]]*spi3_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
-              psels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>;
-          }" "$DTS"
+          # 1) pinctrl（psels）只寫 BASE_DTS（pinctrl 定義在這）
+          if grep -qE "${default_pat}" "$BASE_DTS"; then
+            sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
+            sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
+            \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
+            }" "$BASE_DTS"
+          fi
+          if grep -qE "${sleep_pat}" "$BASE_DTS"; then
+            sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
+            sed -i -E "/${sleep_pat}/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
+            \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
+            }" "$BASE_DTS"
+          fi
 
-          sed -i -E "/^[[:space:]]*&spi3[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#cs-gpios[[:space:]]*=<[^;]+>;#cs-gpios = <\\&gpio${CS_PORT} ${CS_PIN} GPIO_ACTIVE_LOW>;#g" "$DTS"
-
+          # PWM0 pinctrl 也改在 BASE_DTS
           sed -i -E \
             -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
-            "$DTS"
+            "$BASE_DTS"
 
-          sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS"
+          # 2) cs-gpios：優先寫 VAR_DTS（smspi），沒有就寫 BASE_DTS
+          target_for_cs="$BASE_DTS"
+          if [[ -f "$VAR_DTS" ]] && grep -qE "${node_pat}" "$VAR_DTS"; then
+            target_for_cs="$VAR_DTS"
+          fi
+          sed -i -E "/${node_pat}/,/^[[:space:]]*\\};/ {/cs-gpios[[:space:]]*=/,/;/d}" "$target_for_cs" || true
+          sed -i -E "/${node_pat}/{n; a\\
+          \\tcs-gpios = <\\&gpio${CS_PORT} ${CS_PIN} GPIO_ACTIVE_LOW>\\;
+          }" "$target_for_cs" || true
 
-          sed -i -E "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ { \
+          # 3) buttons / zephyr,user：兩檔都嘗試寫入（節點存在才會變動）
+          for DTS in "$BASE_DTS" "$VAR_DTS"; do
+            [[ -f "$DTS" ]] || continue
+            sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS" || true
+            sed -i -E "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ { \
               s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#; \
               s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <\\&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#; \
               s#(clk-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#; \
               s#(int0-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${INT_PORT} ${INT_PIN}#; \
               s#(vcc-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${VCC_PORT} ${VCC_PIN}#; \
-            }" "$DTS"
+            }" "$DTS" || true
+          done
 
-      - name: Enable External Sensor Clock
-        if: env.SENSOR_CLOCK == 'enabled'
+          echo "=== After patch summary ==="
+          echo "[BASE_DTS] $BASE_DTS"
+          grep -nE "spi3_(default|sleep)|pwm0_(default|sleep)" "$BASE_DTS" || true
+          echo "[cs-gpios in BASE/VAR]"
+          grep -nE "cs-gpios" "$BASE_DTS" "$VAR_DTS" 2>/dev/null || true
+          echo "[user pins]"
+          grep -nE "led-gpios|clk-gpios|int0-gpios|vcc-gpios" "$BASE_DTS" "$VAR_DTS" 2>/dev/null || true
+
+      - name: External Sensor Clock toggle
         run: |
           cd zephyr-workspace
-          sed -i "s|//[[:space:]]*clk-gpios|clk-gpios|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
-          printf "\nCONFIG_USE_SENSOR_CLOCK=y" >> SlimeVR-Tracker-nRF/prj.conf
+          if [[ "${SENSOR_CLOCK}" == "enabled" ]]; then
+            sed -i "s|//[[:space:]]*clk-gpios|clk-gpios|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2*.dts
+            echo "CONFIG_USE_SENSOR_CLOCK=y" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            sed -i "s|clk-gpios[[:space:]]*=|// clk-gpios =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2*.dts
+            echo "CONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
 
-      - name: Disable External Sensor Clock
-        if: env.SENSOR_CLOCK == 'disabled'
-        run: |
-          cd zephyr-workspace
-          sed -i "s|clk-gpios[[:space:]]*=|// clk-gpios =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
-          printf "\nCONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
-
-      - name: Enable/Disable feature toggles
+      - name: Apply feature toggles
         run: |
           cd zephyr-workspace
           { [[ "${EXTRA_ACTIONS}" == "enabled" ]] && echo "CONFIG_USER_EXTRA_ACTIONS=y" || echo "CONFIG_USER_EXTRA_ACTIONS=n"; } >> SlimeVR-Tracker-nRF/prj.conf
@@ -206,12 +233,12 @@ jobs:
             echo "CONFIG_SENSOR_USE_LOW_POWER_2=n" >> SlimeVR-Tracker-nRF/prj.conf
           fi
           if [[ "${SW0_BUTTON}" == "enabled" ]]; then
-            sed -i "s|//[[:space:]]*sw0[[:space:]]*=|sw0 =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+            sed -i "s|//[[:space:]]*sw0[[:space:]]*=|sw0 =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2*.dts
           else
-            sed -i "s|sw0[[:space:]]*=|// sw0 =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+            sed -i "s|sw0[[:space:]]*=|// sw0 =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2*.dts
           fi
 
-      - name: Build SlimeVR-Tracker-nRF (tracker only)
+      - name: Build SlimeVR-Tracker-nRF (SMSPI)
         run: |
           cd zephyr-workspace
           rm -rf SlimeVR-Tracker-nRF/build
@@ -244,6 +271,22 @@ jobs:
           name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
           path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
 
+      - name: Prepare release file list
+        shell: bash
+        run: |
+          set -euo pipefail
+          UF2_PATH="zephyr-workspace/Releases/${OUTPUT_NAME}.${FILEFORMAT}"
+          DTS_DIR="zephyr-workspace/SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2"
+          SMSPI_DTS="$DTS_DIR/promicro_uf2_smspi.dts"
+          {
+            echo "RELEASE_FILES<<EOF"
+            echo "${UF2_PATH}"
+            if [[ "${ATTACH_SMSPI_DTS}" == "enabled" && -f "${SMSPI_DTS}" ]]; then
+              echo "${SMSPI_DTS}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
       - name: Create/Update Github Release
         uses: mini-bomba/create-github-release@v1.2.0
         with:
@@ -258,11 +301,11 @@ jobs:
               MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
               CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
               SW0=${{ env.SW0_BUTTON }}
-            Pins (SPI):
+            Pins (SMSPI):
               MISO=${{ env.MISO }}, MOSI=${{ env.MOSI }}, SCK=${{ env.SCK }}, CS=${{ env.CS }}
               PWM0=${{ env.PWM0 }}, SW0=${{ env.SW0 }}
               LED=${{ env.LED }}, CLK=${{ env.CLK }}
               INT=${{ env.INT }}, VCC=${{ env.VCC }}
           files: |
-            zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+            ${{ env.RELEASE_FILES }}
           clear_attachments: true
