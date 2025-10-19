@@ -21,7 +21,7 @@
 - **Sleep (WOM)** —— 啟用／調整 Wake-On-Motion 以降低功耗。
 - **Pin mapping** —— 自訂板子／變體的針腳配置。
 
-> 以上參數可在手動觸發工作流程時，於 Fork 後編輯 `.github/workflows/` 內的工作流程檔設定。
+> 以上參數可在 Fork 後編輯 .github/workflows/ 內的工作流程檔設定。
 
 ## 致謝與來源（Acknowledgements & Provenance）
 本專案起源自 [Shine-Bright-Meow/SlimeNRF-Firmware-CI](https://github.com/Shine-Bright-Meow/SlimeNRF-Firmware-CI)。
