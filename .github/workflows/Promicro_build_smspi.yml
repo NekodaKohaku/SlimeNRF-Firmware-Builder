@@ -19,15 +19,15 @@ jobs:
       FILEFORMAT: "uf2"
 
       # --- ピン設定 --- 
-      MISO: "P0.24"
-      MOSI: "P0.06"
-      SCK:  "P0.08"
-      CS:   "P0.22"
+      MISO: "P0.22"
+      MOSI: "P0.20"
+      SCK:  "P0.17"
+      CS:   "P0.24"
       PWM0: "P0.15"
-      SW0:  "P1.00"
+      SW0:  "P0.06"
       LED:  "P0.15"
       CLK:  "P0.20"
-      INT:  "P0.17"
+      INT:  "P1.00"
       VCC:  "P0.31"
 
       #  --- I2C ---
