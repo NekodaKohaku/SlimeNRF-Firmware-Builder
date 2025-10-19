@@ -100,7 +100,6 @@ jobs:
           echo "BOARD=${BOARD_PREFIX}spi" >> $GITHUB_ENV
           echo "OUTPUT_NAME=${FILENAME_PREFIX}SPI_ProMicro" >> $GITHUB_ENV
 
-      # 常に UF2 を出す
       - name: Force UF2 output (Kconfig)
         run: |
           cd zephyr-workspace
@@ -110,6 +109,15 @@ jobs:
         run: |
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
+
+      - name: Snapshot DTS (before change)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+          mkdir -p Releases/dts
+          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+          cp "$DTS" "Releases/dts/promicro_uf2.before.dts"
 
       - name: Apply pin mapping to DTS
         shell: bash
@@ -150,22 +158,22 @@ jobs:
             fi
           done
 
-          # --- spi3_default：刪掉舊 psels -> 在 group1{ 之後插入一行（注意是分號 ; 沒有反斜線）---
+          # spi3_default
           sed -i -E "/^[[:space:]]*spi3_default:[[:space:]]*spi3_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$DTS"
           sed -i -E "/^[[:space:]]*spi3_default:[[:space:]]*spi3_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
               psels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>;
           }" "$DTS"
 
-          # --- spi3_sleep：同樣處理 ---
+          # spi3_sleep
           sed -i -E "/^[[:space:]]*spi3_sleep:[[:space:]]*spi3_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$DTS"
           sed -i -E "/^[[:space:]]*spi3_sleep:[[:space:]]*spi3_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
-              psels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>;
+              psels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>;
           }" "$DTS"
 
-          # --- &spi3 的 CS：就地替換（如果文件內有 cs-gpios）---
+          # &spi3 CS
           sed -i -E "/^[[:space:]]*&spi3[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#cs-gpios[[:space:]]*=<[^;]+>;#cs-gpios = <\\&gpio${CS_PORT} ${CS_PIN} GPIO_ACTIVE_LOW>;#g" "$DTS"
 
-          # PWM0 預設/休眠
+          # PWM0
           sed -i -E \
             -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
@@ -175,12 +183,12 @@ jobs:
           sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS"
 
           # zephyr,user（LED / CLK / INT / VCC）
-          sed -i -E "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ { \
-              s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#; \
-              s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <\\&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#; \
-              s#(clk-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#; \
-              s#(int0-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${INT_PORT} ${INT_PIN}#; \
-              s#(vcc-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${VCC_PORT} ${VCC_PIN}#; \
+          sed -i -E "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ {
+              s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#;
+              s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <\\&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#;
+              s#(clk-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#;
+              s#(int0-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${INT_PORT} ${INT_PIN}#;
+              s#(vcc-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${VCC_PORT} ${VCC_PIN}#;
             }" "$DTS"
 
       - name: Enable External Sensor Clock
@@ -217,7 +225,7 @@ jobs:
             sed -i "s|sw0[[:space:]]*=|// sw0 =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
           fi
 
-      - name: Build SlimeVR-Tracker-nRF (tracker only)
+      - name: Build SlimeVR-Tracker-nRF
         run: |
           cd zephyr-workspace
           rm -rf SlimeVR-Tracker-nRF/build
@@ -244,11 +252,37 @@ jobs:
           }
           mv "$SRC" "Releases/$OUTPUT_NAME.${FILEFORMAT}"
 
-      - name: Upload Artifact
+      # ===== 新增：收集 DTS 與 Diff，並打包上傳 =====
+      - name: Collect DTS & Diff, then Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+          mkdir -p Releases/dts
+          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+
+          cp "$DTS" "Releases/dts/promicro_uf2.after.dts"
+
+          if [[ -f "Releases/dts/promicro_uf2.before.dts" ]]; then
+            diff -u "Releases/dts/promicro_uf2.before.dts" "Releases/dts/promicro_uf2.after.dts" > "Releases/dts/promicro_uf2.pins.diff" || true
+          else
+            echo "WARN: promicro_uf2.before.dts not found, skipping diff"
+          fi
+
+          tar -czf "Releases/${OUTPUT_NAME}_DTS.tgz" -C Releases dts
+          ls -la Releases
+
+      - name: Upload Artifact (UF2)
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
           path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+
+      - name: Upload Artifact (DTS package)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_NAME }}_DTS.tgz
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
 
       - name: Create/Update Github Release
         uses: mini-bomba/create-github-release@v1.2.0
@@ -269,6 +303,10 @@ jobs:
               PWM0=${{ env.PWM0 }}, SW0=${{ env.SW0 }}
               LED=${{ env.LED }}, CLK=${{ env.CLK }}
               INT=${{ env.INT }}, VCC=${{ env.VCC }}
+            DTS artifacts:
+              - promicro_uf2.before.dts / promicro_uf2.after.dts
+              - promicro_uf2.pins.diff (before vs after)
           files: |
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+            zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
           clear_attachments: true
