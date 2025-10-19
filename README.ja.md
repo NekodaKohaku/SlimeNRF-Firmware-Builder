@@ -21,7 +21,7 @@
 - **Sleep (WOM)** — 低消費電力化のために Wake-On-Motion を有効化／調整。
 - **Pin mapping** — ボード固有のピン割り当てをカスタマイズ。
 
-> これらの値は手動実行時のワークフロー入力として渡すか、Fork 先の `.github/workflows/` 配下のワークフローファイルを編集して指定できます。
+> フォーク後、フォーク先の .github/workflows/ 配下にあるワークフローファイルを編集してこれらのパラメータを設定できます。
 
 ## 謝辞・由来（Acknowledgements & Provenance）
 本プロジェクトは [Shine-Bright-Meow/SlimeNRF-Firmware-CI](https://github.com/Shine-Bright-Meow/SlimeNRF-Firmware-CI) に由来します。
