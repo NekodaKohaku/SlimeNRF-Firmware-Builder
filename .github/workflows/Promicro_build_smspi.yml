@@ -1,9 +1,8 @@
-name: Build SlimeNRF (smSPI)
+name: Build SlimeNRF Tracker (smSPI)
 
 on:
   workflow_dispatch:
 
-# Allow one concurrent deployment
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -12,120 +11,220 @@ permissions: write-all
 
 jobs:
   build:
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        boards: [
-          # --- smSPI (no mag) ---
-          {boardname: "promicro_uf2/nrf52840/smspi", clk: "disabled", type: "tracker", extraaction: "enabled", fileformat: "uf2", filename: "SlimeNRF_Tracker_smSPI_Mag_ProMicro",             magnetometer: "enabled",  sleep: "enabled",  sw0: "disabled"}
-        ]
-    if: always()
     runs-on: ubuntu-latest
-    steps:
 
-      - name: 💻 Acquire code
-        if: always()
+    env:
+      FILENAME_PREFIX: "SlimeNRF_Tracker_"
+      FILEFORMAT: "uf2"
+
+      # 目標板（讓 Zephyr 自動挑 promicro_uf2_smspi.dts 與 socs/nrf52840_smspi.overlay）
+      BOARD: "promicro_uf2/nrf52840/smspi"
+
+      # 這些 pin 只用來記錄到 release 說明，不做任何檔案修改
+      SPI_LABEL: "spi3"
+      MISO: "P0.22"
+      MOSI: "P0.20"
+      SCK:  "P0.17"
+      CS:   "P0.24"
+      SDA:  "P1.13"
+      SCL:  "P1.15"
+      PWM0: "P0.15"
+      SW0:  "P1.00"
+      LED:  "P0.15"
+      CLK:  "P1.11"
+      INT:  "P0.02"
+      VCC:  "P0.31"
+
+      # 功能開關（只透過 prj.conf／簡單註解切換，不改 pin）
+      MAGNETOMETER: "enabled"
+      SLEEP:        "disabled"
+      SENSOR_CLOCK: "enabled"
+      EXTRA_ACTIONS: "disabled"
+      SW0_BUTTON:   "disabled"
+
+      # 是否把 smspi 的 DTS 一併附到 release
+      ATTACH_SMSPI_DTS: "enabled"
+
+    steps:
+      - name: Acquire code (root)
         uses: actions/checkout@v5
 
-      - name: 📝 Put commit hash/name in env variables
+      - name: Put commit hash/name in env variables
         run: |
           echo "GIT_HASH=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
           echo "GIT_MESSAGE<<EOF" >> $GITHUB_ENV
           git log -1 --pretty=%B >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      - name: 🧹 Clean Landing Site
-        run: |
-          sudo rm -rf zephyr-workspace/SlimeNRF-CI
-      - uses: actions/checkout@v5
+      - name: Clean Landing Site
+        run: sudo rm -rf zephyr-workspace/SlimeNRF-CI
+
+      - name: Acquire code (manifest at zephyr-workspace/SlimeNRF-CI)
+        uses: actions/checkout@v5
         with:
           path: zephyr-workspace/SlimeNRF-CI
 
-      - name: 🧰 Install Dependencies + West
+      - name: Install Dependencies + West
         run: |
           sudo apt-get update && sudo apt install --no-install-recommends \
-          git \
-          cmake \
-          ninja-build \
-          gperf \
-          ccache \
-          dfu-util \
-          device-tree-compiler \
-          wget \
-          python3-dev \
-          python3-pip \
-          python3-setuptools \
-          python3-tk \
-          python3-wheel \
-          python3-venv \
-          xz-utils \
-          file \
-          make \
-          gcc \
-          gcc-multilib \
-          g++-multilib \
-          libsdl2-dev \
-          libmagic1
-
+            git cmake ninja-build gperf ccache dfu-util device-tree-compiler \
+            wget python3-dev python3-pip python3-setuptools python3-tk \
+            python3-wheel python3-venv xz-utils file make gcc gcc-multilib \
+            g++-multilib libsdl2-dev libmagic1
           python3 -m venv ~/.venv
           source ~/.venv/bin/activate
           echo "PATH=$PATH" >> $GITHUB_ENV
           pip3 install west ninja
 
-      - name: 🪁 Install Zephyr SDK
+      - name: Install Zephyr SDK
         run: |
           wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
           tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
           ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
 
-      - name: ♻️ Initialize Zephyr Workspace
+      - name: Initialize Zephyr Workspace
         run: |
           cd zephyr-workspace
-          sudo rm -rf .west
+          rm -rf .west
           west init -l SlimeNRF-CI
           west update --narrow -o=--depth=1
           west zephyr-export
 
-      - name: 🐍 Install Python Dependencies
+      - name: Install Zephyr Python requirements
         run: |
           cd zephyr-workspace
+          source ~/.venv/bin/activate
           pip3 install -r zephyr/scripts/requirements.txt
+          python -c "import elftools.elf.elffile, yaml; print('Zephyr Python deps OK')"
 
-      - name: 🔧 Preparing Build Environment
-        if: always()
+      - name: Preparing Build Environment
         run: |
           cd zephyr-workspace
-          sudo rm -rf Releases
+          rm -rf Releases
           mkdir Releases
 
-      # Receiver step will be skipped because no 'receiver' entries remain
-      - name: 🔨 Build SlimeVR-Tracker-nRF - ${{ matrix.boards.boardname }}
-        if: ${{ (matrix.boards.type == 'tracker') && (!contains(matrix.boards.filename, 'Stacked')) }}
+      - name: Derive names (SMSPI)
+        run: echo "OUTPUT_NAME=${FILENAME_PREFIX}SMSPI_ProMicro" >> $GITHUB_ENV
+
+      - name: Force UF2 output (Kconfig)
         run: |
           cd zephyr-workspace
-          sudo rm -rf SlimeVR-Tracker-nRF/build
-          mkdir SlimeVR-Tracker-nRF/build
+          printf "\nCONFIG_BUILD_OUTPUT_UF2=y" >> SlimeVR-Tracker-nRF/prj.conf
 
+      - name: Sanity check workspace (board + overlay present)
+        run: |
+          test -f zephyr-workspace/SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2_smspi.dts || (echo "promicro_uf2_smspi.dts missing"; exit 1)
+          test -f zephyr-workspace/SlimeVR-Tracker-nRF/socs/nrf52840_smspi.overlay || (echo "socs/nrf52840_smspi.overlay missing"; exit 1)
+
+      # 只做 overlay 檔的「編碼/換行」正規化（不改內容、不改 pin）
+      - name: Normalize smSPI overlay (encoding + newlines only)
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace/SlimeVR-Tracker-nRF
+          OF="socs/nrf52840_smspi.overlay"
+          cat > .fix_overlay.py <<'PY'
+from pathlib import Path
+p = Path("socs/nrf52840_smspi.overlay")
+b = p.read_bytes()
+# 嘗試常見 BOM/編碼並轉成 UTF-8
+def decode_guess(x: bytes) -> str:
+    for enc in ("utf-8-sig","utf-16","utf-16le","utf-16be","utf-32","utf-32le","utf-32be"):
+        try: return x.decode(enc)
+        except UnicodeDecodeError: pass
+    return x.decode("utf-8","replace")
+s = decode_guess(b)
+# 正規化換行，去掉 NUL
+s = s.replace("\r\n","\n").replace("\r","\n").replace("\x00","")
+# 不移除任何語義行（保守處理）
+Path(OF).write_text(s, encoding="utf-8", newline="\n")
+print("overlay normalized; bytes:", len(s.encode()))
+PY
+          python3 .fix_overlay.py
+          file -bi "$OF" || true
+          head -c 64 "$OF" | hexdump -C || true
+
+      # ⚠️ 已移除：Apply pin mapping to DTS（不再改任何 pin）
+
+      - name: External Sensor Clock toggle
+        run: |
+          cd zephyr-workspace
+          if [[ "${SENSOR_CLOCK}" == "enabled" ]]; then
+            sed -i "s|//[[:space:]]*clk-gpios|clk-gpios|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2*.dts
+            echo "CONFIG_USE_SENSOR_CLOCK=y" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            sed -i "s|clk-gpios[[:space:]]*=|// clk-gpios =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2*.dts
+            echo "CONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+
+      - name: Apply feature toggles
+        run: |
+          cd zephyr-workspace
+          { [[ "${EXTRA_ACTIONS}" == "enabled" ]] && echo "CONFIG_USER_EXTRA_ACTIONS=y" || echo "CONFIG_USER_EXTRA_ACTIONS=n"; } >> SlimeVR-Tracker-nRF/prj.conf
+          { [[ "${MAGNETOMETER}"  == "enabled" ]] && echo "CONFIG_SENSOR_USE_MAG=y"     || echo "CONFIG_SENSOR_USE_MAG=n"; }     >> SlimeVR-Tracker-nRF/prj.conf
+          if [[ "${SLEEP}" == "enabled" ]]; then
+            echo "CONFIG_USE_IMU_WAKE_UP=y" >> SlimeVR-Tracker-nRF/prj.conf
+            echo "CONFIG_USE_ACTIVE_TIMEOUT=y" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            echo "CONFIG_USE_IMU_WAKE_UP=n" >> SlimeVR-Tracker-nRF/prj.conf
+            echo "CONFIG_USE_ACTIVE_TIMEOUT=n" >> SlimeVR-Tracker-nRF/prj.conf
+            echo "CONFIG_SENSOR_LP_TIMEOUT=300000" >> SlimeVR-Tracker-nRF/prj.conf
+            echo "CONFIG_SENSOR_USE_LOW_POWER_2=n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+          if [[ "${SW0_BUTTON}" == "enabled" ]]; then
+            sed -i "s|//[[:space:]]*sw0[[:space:]]*=|sw0 =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2*.dts
+          else
+            sed -i "s|sw0[[:space:]]*=|// sw0 =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2*.dts
+          fi
+
+      - name: Build SlimeVR-Tracker-nRF (SMSPI)
+        run: |
+          cd zephyr-workspace
+          rm -rf SlimeVR-Tracker-nRF/build
+          mkdir -p SlimeVR-Tracker-nRF/build
           west build \
-              --board ${{ matrix.boards.boardname }} \
-              --pristine=always SlimeVR-Tracker-nRF \
-              --build-dir SlimeVR-Tracker-nRF/build \
-              -- \
-              -DNCS_TOOLCHAIN_VERSION=NONE \
-              -DBOARD_ROOT=../SlimeVR-Tracker-nRF
+            --board "$BOARD" \
+            --pristine=always SlimeVR-Tracker-nRF \
+            --build-dir SlimeVR-Tracker-nRF/build \
+            -- \
+            -DNCS_TOOLCHAIN_VERSION=NONE \
+            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
+          SRC1="SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}"
+          SRC2="SlimeVR-Tracker-nRF/build/zephyr/zephyr.${FILEFORMAT}"
+          if   [ -f "$SRC1" ]; then SRC="$SRC1";
+          elif [ -f "$SRC2" ]; then SRC="$SRC2";
+          else
+            SRC=$(find SlimeVR-Tracker-nRF/build -type f -name "*.uf2" | head -n1)
+          fi
+          test -n "$SRC" -a -f "$SRC" || {
+            echo "UF2 not found; listing possible outputs under build:"
+            find SlimeVR-Tracker-nRF/build -maxdepth 6 -type f -name "zephyr.*" -printf "  %p\n"
+            exit 1
+          }
+          mv "$SRC" "Releases/$OUTPUT_NAME.${FILEFORMAT}"
 
-          mv SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${{ matrix.boards.fileformat }} Releases/${{ matrix.boards.filename }}.${{ matrix.boards.fileformat }}
-
-      - name: 💾 Upload Artifact - ${{ matrix.boards.boardname }}
-        if: always()
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.boards.filename }}.${{ matrix.boards.fileformat }}
-          path: zephyr-workspace/Releases/${{ matrix.boards.filename }}.${{ matrix.boards.fileformat }}
+          name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
 
-      - name: 📁 Create/Update Github Release
-        if: always()
+      - name: Prepare release file list
+        shell: bash
+        run: |
+          set -euo pipefail
+          UF2_PATH="zephyr-workspace/Releases/${OUTPUT_NAME}.${FILEFORMAT}"
+          DTS_DIR="zephyr-workspace/SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2"
+          SMSPI_DTS="$DTS_DIR/promicro_uf2_smspi.dts"
+          {
+            echo "RELEASE_FILES<<EOF"
+            echo "${UF2_PATH}"
+            if [[ "${ATTACH_SMSPI_DTS}" == "enabled" && -f "${SMSPI_DTS}" ]]; then
+              echo "${SMSPI_DTS}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Create/Update Github Release
         uses: mini-bomba/create-github-release@v1.2.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -133,8 +232,18 @@ jobs:
           prerelease: false
           name: "Latest Firmware"
           body: |
-            Successful build of the latest SlimeNRF Firmware. (Automated)
+            Manual build of the SlimeNRF Tracker Firmware.
+            Board: ${{ env.BOARD }}
+            Features:
+              MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
+              CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
+              SW0=${{ env.SW0_BUTTON }}
+            Pins (SMSPI + I2C):
+              MISO=${{ env.MISO }}, MOSI=${{ env.MOSI }}, SCK=${{ env.SCK }}, CS=${{ env.CS }}
+              SDA=${{ env.SDA }}, SCL=${{ env.SCL }}
+              PWM0=${{ env.PWM0 }}, SW0=${{ env.SW0 }}
+              LED=${{ env.LED }}, CLK=${{ env.CLK }}
+              INT=${{ env.INT }}, VCC=${{ env.VCC }}
           files: |
-            zephyr-workspace/Releases/${{ matrix.boards.filename }}.${{ matrix.boards.fileformat }}
-          clear_attachments: false
-
+            ${{ env.RELEASE_FILES }}
+          clear_attachments: true
