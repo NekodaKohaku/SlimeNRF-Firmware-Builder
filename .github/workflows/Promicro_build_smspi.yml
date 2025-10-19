@@ -150,31 +150,25 @@ jobs:
             fi
           done
 
-          # --- spi3_default：刪掉舊 psels -> 在 group1{ 之後插入一行（注意是分號 ; 沒有反斜線）---
           sed -i -E "/^[[:space:]]*spi3_default:[[:space:]]*spi3_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$DTS"
           sed -i -E "/^[[:space:]]*spi3_default:[[:space:]]*spi3_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
               psels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>;
           }" "$DTS"
 
-          # --- spi3_sleep：同樣處理 ---
           sed -i -E "/^[[:space:]]*spi3_sleep:[[:space:]]*spi3_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$DTS"
           sed -i -E "/^[[:space:]]*spi3_sleep:[[:space:]]*spi3_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
               psels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>;
           }" "$DTS"
 
-          # --- &spi3 的 CS：就地替換（如果文件內有 cs-gpios）---
           sed -i -E "/^[[:space:]]*&spi3[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#cs-gpios[[:space:]]*=<[^;]+>;#cs-gpios = <\\&gpio${CS_PORT} ${CS_PIN} GPIO_ACTIVE_LOW>;#g" "$DTS"
 
-          # PWM0 預設/休眠
           sed -i -E \
             -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             "$DTS"
 
-          # SW0（buttons）
           sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS"
 
-          # zephyr,user（LED / CLK / INT / VCC）
           sed -i -E "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ { \
               s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#; \
               s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <\\&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#; \
