@@ -1,3 +1,10 @@
+<p align="right">
+  Languages:
+  <a href="README.md">EN</a> |
+  <a href="README.zh-TW.md">繁體中文</a>
+  <a href="README.ja.md">日本語</a>
+</p>
+
 # SlimeNRF-Firmware-Builder
 
 Build SlimeNRF firmware in the cloud with **GitHub Actions** — no local toolchain required.
