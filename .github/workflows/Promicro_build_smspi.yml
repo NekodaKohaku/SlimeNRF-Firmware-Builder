@@ -18,7 +18,10 @@ jobs:
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
-      # 哪個 SPI 控制器（需要改用別顆就換成 spi2 等）
+      # 目標板（讓 Zephyr 自動挑 promicro_uf2_smspi.dts 與 socs/nrf52840_smspi.overlay）
+      BOARD: "promicro_uf2/nrf52840/smspi"
+
+      # 使用哪個 SPI 控制器（要換別顆改這裡，例如 spi2）
       SPI_LABEL: "spi3"
 
       # --- ピン設定 ---
@@ -45,7 +48,7 @@ jobs:
       EXTRA_ACTIONS: "disabled"
       SW0_BUTTON:   "disabled"
 
-      # --- logs / release 附檔 ---
+      # 是否把 smspi 的 DTS 一併附到 release
       ATTACH_SMSPI_DTS: "enabled"
 
     steps:
@@ -108,9 +111,7 @@ jobs:
 
       - name: Derive names (SMSPI)
         run: |
-          echo "BOARD=${BOARD_PREFIX}smspi" >> $GITHUB_ENV
           echo "OUTPUT_NAME=${FILENAME_PREFIX}SMSPI_ProMicro" >> $GITHUB_ENV
-          echo "BOARD_FULL=${BOARD_PREFIX}smspi" >> $GITHUB_ENV
 
       - name: Force UF2 output (Kconfig)
         run: |
@@ -122,7 +123,68 @@ jobs:
           test -f zephyr-workspace/SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2_smspi.dts || (echo "promicro_uf2_smspi.dts missing"; exit 1)
           test -f zephyr-workspace/SlimeVR-Tracker-nRF/socs/nrf52840_smspi.overlay || (echo "socs/nrf52840_smspi.overlay missing"; exit 1)
 
-      # === 核心：SPI + I2C + user pins 一併覆寫（保留 overlay，不動它） ===
+      # ＝＝＝ 關鍵修復：正規化 overlay 檔（去 BOM、去 CRLF；若缺檔就重建） ＝＝＝
+      - name: Normalize smSPI overlay file (fix BOM/CRLF & ensure content)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace/SlimeVR-Tracker-nRF
+          overlay="socs/nrf52840_smspi.overlay"
+          if [[ -f "$overlay" ]]; then
+            python3 - "$overlay" <<'PY'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+b = p.read_bytes()
+if b.startswith(b'\xef\xbb\xbf'):  # strip UTF-8 BOM
+    b = b[3:]
+b = b.replace(b'\r\n', b'\n').replace(b'\r', b'\n')  # CRLF/CR -> LF
+p.write_bytes(b)
+print("Sanitized overlay:", p, "bytes:", len(b))
+PY
+          else
+            mkdir -p socs
+            cat > "$overlay" <<'EOF'
+/ {
+  sram0@2003f000 {
+    compatible = "zephyr,memory-region", "mmio-sram";
+    reg = <0x2003f000 DT_SIZE_K(4)>;
+    zephyr,memory-region = "RETAINED_MEM";
+    status = "okay";
+
+    retainedmem0: retainedmem {
+      compatible = "zephyr,retained-ram";
+      status = "okay";
+    };
+  };
+
+  sram0@20007f7c {
+    compatible = "zephyr,memory-region", "mmio-sram";
+    reg = <0x20007f7c 4>;
+    zephyr,memory-region = "DFU_DBL_RESET_MEM";
+    status = "okay";
+
+    retainedmem {
+      compatible = "zephyr,retained-ram";
+      status = "okay";
+    };
+  };
+
+  aliases {
+    retainedmemdevice = &retainedmem0;
+  };
+};
+
+&sram0 {
+  /* Shrink SRAM size to avoid overlap with retained memory region */
+  reg = <0x20000000 DT_SIZE_K(252)>;
+};
+EOF
+            echo "Overlay reconstructed."
+          fi
+          echo "Overlay first bytes (hex):"
+          head -c 16 "$overlay" | hexdump -C || true
+
+      # === SPI + I2C + user pins 一併覆寫（保留 overlay，不動它） ===
       - name: Apply pin mapping to DTS (SMSPI-aware + I2C)
         shell: bash
         run: |
@@ -160,13 +222,12 @@ jobs:
             if [[ $port -eq 1 && $pin -gt 15 ]]; then echo "$P: Port 1 supports only 0..15"; exit 1; fi
           done
 
-          # 產生 pattern（之前報 unbound 這裡補上）
           label="${SPI_LABEL}"
           default_pat="^[[:space:]]*${label}_default:[[:space:]]*${label}_default[[:space:]]*\\{"
           sleep_pat="^[[:space:]]*${label}_sleep:[[:space:]]*${label}_sleep[[:space:]]*\\{"
           node_pat="^[[:space:]]*&${label}[[:space:]]*\\{"
 
-          # -------- SPI pinctrl: 改 BASE_DTS 的 pinctrl（psels） --------
+          # SPI pinctrl 改 BASE_DTS
           if [[ -f "$BASE_DTS" ]]; then
             if grep -qE "${default_pat}" "$BASE_DTS"; then
               sed -i -E "/${default_pat}/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$BASE_DTS"
@@ -182,7 +243,7 @@ jobs:
             fi
           fi
 
-          # -------- I2C pinctrl: 改 BASE_DTS 的 i2c0_default/sleep --------
+          # I2C pinctrl 改 BASE_DTS 的 i2c0_default/sleep（有節點才會改）
           if [[ -f "$BASE_DTS" ]]; then
             if grep -qE "^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{" "$BASE_DTS"; then
               sed -i -E "/^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" "$BASE_DTS"
@@ -192,7 +253,7 @@ jobs:
             fi
           fi
 
-          # -------- cs-gpios: 優先寫 VAR_DTS（smspi 有 &spi3 節點），否則寫 BASE_DTS --------
+          # cs-gpios 優先改 VAR_DTS（smspi），否則 BASE_DTS
           target_for_cs="$BASE_DTS"
           if [[ -f "$VAR_DTS" ]] && grep -qE "${node_pat}" "$VAR_DTS"; then
             target_for_cs="$VAR_DTS"
@@ -204,7 +265,7 @@ jobs:
             }" "$target_for_cs" || true
           fi
 
-          # -------- PWM0 pinctrl: 改 BASE_DTS --------
+          # PWM0 pinctrl 改 BASE_DTS
           if [[ -f "$BASE_DTS" ]]; then
             sed -i -E \
               -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
@@ -212,7 +273,7 @@ jobs:
               "$BASE_DTS"
           fi
 
-          # -------- buttons / zephyr,user: 兩檔都嘗試寫入（節點存在才會變動） --------
+          # buttons / zephyr,user 兩檔都試著改
           for DTS in "$BASE_DTS" "$VAR_DTS"; do
             [[ -f "$DTS" ]] || continue
             sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS" || true
@@ -227,7 +288,7 @@ jobs:
 
           echo "=== After patch summary ==="
           echo "[BASE_DTS] $BASE_DTS"
-          grep -nE "spi3_(default|sleep)|pwm0_(default|sleep)|i2c0_(default|sleep)" "$BASE_DTS" || true
+          grep -nE "${label}_(default|sleep)|pwm0_(default|sleep)|i2c0_(default|sleep)" "$BASE_DTS" || true
           echo "[cs-gpios in BASE/VAR]"
           grep -nE "cs-gpios" "$BASE_DTS" "$VAR_DTS" 2>/dev/null || true
           echo "[user pins]"
@@ -270,7 +331,7 @@ jobs:
           rm -rf SlimeVR-Tracker-nRF/build
           mkdir -p SlimeVR-Tracker-nRF/build
           west build \
-            --board "$BOARD_FULL" \
+            --board "$BOARD" \
             --pristine=always SlimeVR-Tracker-nRF \
             --build-dir SlimeVR-Tracker-nRF/build \
             -- \
@@ -321,7 +382,7 @@ jobs:
           name: "Latest Firmware"
           body: |
             Manual build of the SlimeNRF Tracker Firmware.
-            Board: ${{ env.BOARD_FULL }}
+            Board: ${{ env.BOARD }}
             Features:
               MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
               CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
