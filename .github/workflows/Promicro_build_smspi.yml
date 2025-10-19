@@ -102,7 +102,7 @@ jobs:
       - name: Derive names (smSPI)
         run: |
           echo "BOARD=${BOARD_PREFIX}smspi" >> $GITHUB_ENV
-          echo "OUTPUT_NAME=${FILENAME_PREFIX}smSPI_Mag_ProMicro" >> $GITHUB_ENV
+          echo "OUTPUT_NAME=${FILENAME_PREFIX}smSPI_ProMicro" >> $GITHUB_ENV
 
       # 一律輸出 UF2
       - name: Force UF2 output (Kconfig)
