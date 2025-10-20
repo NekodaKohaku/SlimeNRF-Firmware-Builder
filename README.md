@@ -24,7 +24,5 @@ This repository is for users who cannot reliably build firmware on their own mac
 > After forking, you can configure these parameters by editing the workflow file(s) under .github/workflows/.
 
 ## Acknowledgements & Provenance
-This project originated from [Shine-Bright-Meow/SlimeNRF-Firmware-CI](https://github.com/Shine-Bright-Meow/SlimeNRF-Firmware-CI).
+This project is based on and modified from [Shine-Bright-Meow/SlimeNRF-Firmware-CI](https://github.com/Shine-Bright-Meow/SlimeNRF-Firmware-CI).
 Huge thanks to the upstream authors and contributors.
-
-*If your usage requires it, please also keep the original license/notice files from upstream.*
