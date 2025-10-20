@@ -162,7 +162,6 @@ jobs:
           VCC  = parse_pin(env["VCC"])
           CLK  = parse_pin(env["CLK"])
 
-          # 替換 i2c1_default / i2c1_sleep 的 psels
           def sub_state(src, state, sda, scl):
             pat = re.compile(rf"(&{state}\s*\{{\s*group1\s*\{{)(.*?)(\}}\s*\}})", re.S)
             def repl(m):
@@ -202,8 +201,8 @@ jobs:
           p.write_text(s)
           print("xiao_ble.overlay pins updated.")
           PY
-          
-      - name: 🚧 I2C-only: neutralize SPI3 pinctrl refs to avoid #gpio-cells error
+
+      - name: 🚧 I2C-only
         if: ${{ matrix.boards.type == 'tracker' }}
         shell: bash
         run: |
