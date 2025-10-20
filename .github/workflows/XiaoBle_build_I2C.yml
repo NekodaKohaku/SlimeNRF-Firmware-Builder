@@ -1,4 +1,4 @@
-name: Build SlimeNRF Tracker (XIAO BLE)
+name: Build XiaoBle Tracker (XIAO BLE)
 
 on:
   workflow_dispatch:
@@ -118,24 +118,26 @@ jobs:
             if not (0 <= pin <= 31): raise SystemExit("Pin must be 0..31")
             return port, pin
 
+          # 允許並保留 'group1 {...};' 與外層 '};'
           def sub_state(s, state, sda, scl):
-            pat = re.compile(rf"(&{state}\s*\{{\s*group1\s*\{{)(.*?)(\}}\s*\}})", re.S)
+            pat = re.compile(rf"(&{state}\s*\{{\s*group1\s*\{{)(.*?)(\}}\s*;\s*\}}\s*;)", re.S)
             def repl(m):
               head, body, tail = m.groups()
               line = f"psels = <NRF_PSEL(TWIM_SDA, {sda[0]}, {sda[1]})>, <NRF_PSEL(TWIM_SCL, {scl[0]}, {scl[1]})>;"
               if re.search(r"\bpsels\s*=", body):
                 body = re.sub(r"psels\s*=.*?;", line, body, flags=re.S)
               else:
+                # 放到 group1{} 的最前面，後面保留原內容
                 body = f"\n\t\t{line}\n" + body
               return head + body + tail
-            return pat.sub(repl, s)
+            return pat.sub(repl, s, count=1)
 
           def sub_pwm0(s, pwm0):
             return re.sub(r"(NRF_PSEL\s*\(\s*PWM_OUT0\s*,\s*)[01]\s*,\s*\d+(\s*\))",
                           rf"\g<1>{pwm0[0]}, {pwm0[1]}\g<2>", s)
 
+          # 正確處理 zephyr,user 區塊並保留結尾 '};'
           def sub_prop(s, prop, port, pin, flags):
-            # 覆寫已存在的 <&gpioX Y ...>；或插入到 zephyr,user { ... }
             if re.search(rf"\b{prop}\b", s):
               s = re.sub(
                 rf"({prop}\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)",
@@ -144,26 +146,20 @@ jobs:
                 flags=re.S
               )
             else:
-              s = re.sub(
-                r"(zephyr,user\s*\{)([^}]*)\}",
-                rf"\1\2\n\t\t{prop} = <&gpio{port} {pin}{flags}>;\n\t\}}",
-                s,
-                flags=re.S
-              )
+              pat = re.compile(r"(zephyr,user\s*\{)(.*?)(\};)", re.S)
+              def repl(m):
+                return f"{m.group(1)}{m.group(2)}\n\t\t{prop} = <&gpio{port} {pin}{flags}>;\n\t{m.group(3)}"
+              s = pat.sub(repl, s, count=1)
             return s
 
           def sub_clk(s, port, pin):
             s = re.sub(
               r"(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)",
-              rf"\g<1>{port} {pin}\g<2>",
-              s,
-              flags=re.M
+              rf"\g<1>{port} {pin}\g<2>", s, flags=re.M
             )
             s = re.sub(
               r"(^\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)",
-              rf"\g<1>{port} {pin}\g<2>",
-              s,
-              flags=re.M
+              rf"\g<1>{port} {pin}\g<2>", s, flags=re.M
             )
             return s
 
