@@ -24,5 +24,5 @@
 > 以上參數可在 Fork 後編輯 .github/workflows/ 內的工作流程檔設定。
 
 ## 致謝與來源（Acknowledgements & Provenance）
-本專案起源自 [Shine-Bright-Meow/SlimeNRF-Firmware-CI](https://github.com/Shine-Bright-Meow/SlimeNRF-Firmware-CI)。
+本專案基於並修改自 [Shine-Bright-Meow/SlimeNRF-Firmware-CI](https://github.com/Shine-Bright-Meow/SlimeNRF-Firmware-CI)。
 特此致謝所有上游作者與貢獻者。
