@@ -110,7 +110,6 @@ jobs:
           echo "FILEFORMAT=${{ matrix.boards.fileformat }}" >> $GITHUB_ENV
           echo "BOARD=${{ matrix.boards.boardname }}" >> $GITHUB_ENV
           echo "OUTPUT_NAME=${{ matrix.boards.filename }}_${GIT_HASH}" >> $GITHUB_ENV
-          # 也把 matrix 的 feature 值寫回（release body 用得到）
           echo "MATRIX_CLK=${{ matrix.boards.clk }}" >> $GITHUB_ENV
           echo "MATRIX_EXTRA=${{ matrix.boards.extraaction }}" >> $GITHUB_ENV
           echo "MATRIX_MAG=${{ matrix.boards.magnetometer }}" >> $GITHUB_ENV
@@ -184,7 +183,6 @@ jobs:
             if re.search(rf"\b{prop}\s*=", src):
               rx = re.compile(rf"({prop}\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)")
               return rx.sub(lambda m: f"{m.group(1)}{port} {pin}{flags_text}{m.group(2)}", src)
-            # 插入到 zephyr,user 內
             uz = re.compile(r"(zephyr,user\s*\{)(.*?)(\n\t*\};)", re.S)
             def add(m):
               return f"{m.group(1)}{m.group(2)}\n\t\t{prop} = <&gpio{port} {pin}{flags_text}>;{m.group(3)}"
@@ -207,12 +205,14 @@ jobs:
         shell: bash
         run: |
           cd zephyr-workspace
-          sed -i -E \
-            's/^([[:space:]]*pinctrl-(0|1)[[:space:]]*=.*&spi2_(default|sleep).*;)/\/\/ \1/g' \
+          sed -i -E '/&spi3[[:space:]]*\{/,/^\}/ s/^([[:space:]]*pinctrl-(names|0|1)[[:space:]]*=.*)/\/\/ \1/' \
             SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
-          sed -n '/&spi3[[:space:]]*{/,/}/p' SlimeVR-Tracker-nRF/boards/xiao_ble.overlay | grep -q 'status = "okay";' && \
-            sed -i '/&spi3[[:space:]]*{/,/}/ s/status = "okay";/status = "disabled";/' \
-              SlimeVR-Tracker-nRF/boards/xiao_ble.overlay || true
+
+          sed -i -E '/&spi3[[:space:]]*\{/,/^\}/ s/status[[:space:]]*=[[:space:]]*"okay";/status = "disabled";/' \
+            SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+
+          echo "Neutralized SPI3 pinctrl and disabled node for I2C-only build."
+
 
       - name: 🔧 Disabling External Clock
         if: ${{ env.SENSOR_CLOCK == 'disabled' }}
