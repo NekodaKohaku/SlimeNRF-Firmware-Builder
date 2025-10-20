@@ -135,19 +135,36 @@ jobs:
                           rf"\g<1>{pwm0[0]}, {pwm0[1]}\g<2>", s)
 
           def sub_prop(s, prop, port, pin, flags):
+            # 覆寫已存在的 <&gpioX Y ...>；或插入到 zephyr,user { ... }
             if re.search(rf"\b{prop}\b", s):
-              s = re.sub(rf"({prop}\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)",
-                         rf"\1{port} {pin}{flags}\2", s)
+              s = re.sub(
+                rf"({prop}\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)",
+                rf"\g<1>{port} {pin}{flags}\g<2>",
+                s,
+                flags=re.S
+              )
             else:
-              s = re.sub(r"(zephyr,user\s*\{)([^}]*)\}",
-                         rf"\1\2\n\t\t{prop} = <&gpio{port} {pin}{flags}>;\n\t\}}", s, flags=re.S)
+              s = re.sub(
+                r"(zephyr,user\s*\{)([^}]*)\}",
+                rf"\1\2\n\t\t{prop} = <&gpio{port} {pin}{flags}>;\n\t\}}",
+                s,
+                flags=re.S
+              )
             return s
 
           def sub_clk(s, port, pin):
-            s = re.sub(r"(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)",
-                       rf"\1{port} {pin}\2", s, flags=re.M)
-            s = re.sub(r"(^\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)",
-                       rf"\1{port} {pin}\2", s, flags=re.M)
+            s = re.sub(
+              r"(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)",
+              rf"\g<1>{port} {pin}\g<2>",
+              s,
+              flags=re.M
+            )
+            s = re.sub(
+              r"(^\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)",
+              rf"\g<1>{port} {pin}\g<2>",
+              s,
+              flags=re.M
+            )
             return s
 
           env = os.environ
