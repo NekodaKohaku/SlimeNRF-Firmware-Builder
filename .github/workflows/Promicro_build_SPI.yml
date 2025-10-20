@@ -1,4 +1,4 @@
-name: Build SlimeNRF Tracker (SPI)
+name: Build Promicro Tracker (SPI)
 
 on:
   workflow_dispatch:
