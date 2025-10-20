@@ -24,4 +24,5 @@
 > フォーク後、フォーク先の .github/workflows/ 配下にあるワークフローファイルを編集してこれらのパラメータを設定できます。
 
 ## 謝辞・由来（Acknowledgements & Provenance）
-本プロジェクトは [Shine-Bright-Meow/SlimeNRF-Firmware-CI](https://github.com/Shine-Bright-Meow/SlimeNRF-Firmware-CI) に由来します。
+本プロジェクトは [Shine-Bright-Meow/SlimeNRF-Firmware-CI](https://github.com/Shine-Bright-Meow/SlimeNRF-Firmware-CI) を基に改変したものです。
+作者に感謝いたします。
