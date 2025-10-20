@@ -1,4 +1,4 @@
-name: Build SlimeNRF Tracker (I2C)
+name: Build Promicro Tracker (I2C)
 
 on:
   workflow_dispatch:
