@@ -202,6 +202,18 @@ jobs:
           p.write_text(s)
           print("xiao_ble.overlay pins updated.")
           PY
+          
+      - name: 🚧 I2C-only: neutralize SPI3 pinctrl refs to avoid #gpio-cells error
+        if: ${{ matrix.boards.type == 'tracker' }}
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          sed -i -E \
+            's/^([[:space:]]*pinctrl-(0|1)[[:space:]]*=.*&spi2_(default|sleep).*;)/\/\/ \1/g' \
+            SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+          sed -n '/&spi3[[:space:]]*{/,/}/p' SlimeVR-Tracker-nRF/boards/xiao_ble.overlay | grep -q 'status = "okay";' && \
+            sed -i '/&spi3[[:space:]]*{/,/}/ s/status = "okay";/status = "disabled";/' \
+              SlimeVR-Tracker-nRF/boards/xiao_ble.overlay || true
 
       - name: 🔧 Disabling External Clock
         if: ${{ env.SENSOR_CLOCK == 'disabled' }}
