@@ -15,7 +15,7 @@ jobs:
 
     env:
       BOARD_PREFIX: "promicro_uf2/nrf52840/"
-      FILENAME_PREFIX: "SlimeNRF_Tracker_"
+      FILENAME_PREFIX: "Promicro_SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
       # --- ピン設定---
