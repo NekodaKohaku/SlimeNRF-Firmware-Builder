@@ -123,7 +123,7 @@ jobs:
           cd zephyr-workspace
           cp "SlimeVR-Tracker-nRF/boards/xiao_ble.overlay" "Releases/dts/xiao_ble.before.overlay" || true
 
-      - name: ✍️ Apply SPI & GPIO pin mapping (override spi2_* states)
+      - name: ✍️ Apply SPI & GPIO pin mapping (override spi2_* states) + print overlay
         if: ${{ matrix.boards.type == 'tracker' }}
         shell: bash
         run: |
@@ -162,7 +162,11 @@ jobs:
           VCC  = parse_pin(E["VCC"])
           SW0  = parse_pin(E["SW0"])
 
-          # 覆寫 pinctrl 狀態：&spi2_default / &spi2_sleep（讓 &spi3 使用）
+          # 0) 移除任何殘留的 spi3_user_* 狀態（避免被 *-gpios 誤引用，觸發 #gpio-cells 錯誤）
+          for lbl in ("spi3_user_default", "spi3_user_sleep"):
+            s = re.sub(rf'^\s*{lbl}\s*:\s*{lbl}\s*\{{.*?\n\}}\s*;\s*', "", s, flags=re.S|re.M)
+
+          # 1) 覆寫 pinctrl 狀態：&spi2_default / &spi2_sleep（讓 &spi3 使用）
           block = f"""
           &spi2_default {{
             group1 {{
@@ -181,21 +185,37 @@ jobs:
             }};
           }};
           """
-
           if not s.endswith("\n"):
             s += "\n"
           s += block + "\n"
 
-          # 修正 &spi3 的 CS 腳位（保留 pinctrl-0/1 指向 spi2_default/sleep）
+          # 2) 修正 &spi3：固定 pinctrl-0/1 指向 spi2_default/sleep，並更新 cs-gpios
           def patch_spi3(src: str) -> str:
+            # pinctrl-0
+            if re.search(r'^\s*pinctrl-0\s*=', src, flags=re.M):
+              src = re.sub(r'^\s*pinctrl-0\s*=\s*<[^;]+>;\s*',
+                           '\t\tpinctrl-0 = <&spi2_default>;\n', src, flags=re.M)
+            else:
+              src = re.sub(r'(^)', '\t\tpinctrl-0 = <&spi2_default>;\n', src, count=1)
+            # pinctrl-1
+            if re.search(r'^\s*pinctrl-1\s*=', src, flags=re.M):
+              src = re.sub(r'^\s*pinctrl-1\s*=\s*<[^;]+>;\s*',
+                           '\t\tpinctrl-1 = <&spi2_sleep>;\n', src, flags=re.M)
+            else:
+              src = re.sub(r'(^)', '\t\tpinctrl-1 = <&spi2_sleep>;\n', src, count=1)
+            # pinctrl-names
+            if not re.search(r'^\s*pinctrl-names\s*=\s*".*default.*".*".*sleep.*"', src, flags=re.M):
+              src = re.sub(r'(^)', '\t\tpinctrl-names = "default", "sleep";\n', src, count=1)
+            # cs-gpios -> &gpio{CS[0]} {CS[1]} GPIO_ACTIVE_LOW
             if re.search(r'^\s*cs-gpios\s*=', src, flags=re.M):
-              return re.sub(
-                r'(^\s*cs-gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+(?:GPIO_[A-Z_]+|0x[0-9a-fA-F]+)(\s*>;\s*)',
-                lambda m: f"{m.group(1)}{CS[0]} {CS[1]} GPIO_ACTIVE_LOW{m.group(2)}",
+              src = re.sub(
+                r'(^\s*cs-gpios\s*=\s*<\s*&)[^>\s]+\s+\d+\s+(?:GPIO_[A-Z_]+|0x[0-9a-fA-F]+)(\s*>;\s*)',
+                lambda m: f"\t\tcs-gpios = <&gpio{CS[0]} {CS[1]} GPIO_ACTIVE_LOW>{m.group(2)}",
                 src, flags=re.M
               )
-            # 若原本沒有 cs-gpios，直接插入一行
-            return re.sub(r'^', f'\t\tcs-gpios = <&gpio{CS[0]} {CS[1]} GPIO_ACTIVE_LOW>;\n', src, count=1)
+            else:
+              src = re.sub(r'(^)', f'\t\tcs-gpios = <&gpio{CS[0]} {CS[1]} GPIO_ACTIVE_LOW>;\n', src, count=1)
+            return src
 
           s = re.sub(
             r'(&spi3\s*\{)(.*?)(\n\};)',
@@ -203,14 +223,13 @@ jobs:
             s, flags=re.S
           )
 
-          # PWM0: 更新 PWM_OUT0 psel
+          # 3) 其他：PWM0 / zephyr,user / clk-gpios / button_0
           s = re.sub(
             r'(NRF_PSEL\s*\(\s*PWM_OUT0\s*,\s*)[01]\s*,\s*\d+(\s*\))',
             lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}",
             s
           )
 
-          # zephyr,user：led/int0/vcc/clk
           def ensure_prop(src, prop, port, pin, flags_text):
             if re.search(rf"\b{prop}\s*=", src):
               rx = re.compile(rf"({prop}\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)")
@@ -224,7 +243,6 @@ jobs:
           s = ensure_prop(s, "int0-gpios", INT0[0], INT0[1], " 0")
           s = ensure_prop(s, "vcc-gpios",  VCC[0], VCC[1],  " 0")
 
-          # clk-gpios：只改腳位，不動 flags；同時支援註解/未註解
           s = re.sub(
             r'(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
             lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}",
@@ -236,7 +254,6 @@ jobs:
             s, flags=re.M
           )
 
-          # button_0：保留 0x11（PULL_UP | ACTIVE_LOW）
           s = re.sub(
             r'(button_0\s*\{[^{}]*?gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+0x[0-9a-fA-F]+(\s*>;)',
             lambda m: f"{m.group(1)}{SW0[0]} {SW0[1]} 0x11{m.group(2)}",
@@ -244,8 +261,35 @@ jobs:
           )
 
           p.write_text(s)
-          print("Overrode &spi2_default/&spi2_sleep pinmaps, cs-gpios, PWM0, zephyr,user, and button_0.")
+
+          # ====== 印檢查資訊 ======
+          print("=== Pin Summary ===")
+          print(f"SCK=P{SCK[0]}.{SCK[1]}  MOSI=P{MOSI[0]}.{MOSI[1]}  MISO=P{MISO[0]}.{MISO[1]}")
+          print(f"CS =P{CS[0]}.{CS[1]}   PWM0=P{PWM0[0]}.{PWM0[1]}  LED=P{LED[0]}.{LED[1]}")
+          print(f"INT=P{INT0[0]}.{INT0[1]} CLK=P{CLK[0]}.{CLK[1]}  VCC=P{VCC[0]}.{VCC[1]}  SW0=P{SW0[0]}.{SW0[1]}")
+          print()
+
+          # 抽出 &spi3 區塊快速檢視
+          m = re.search(r'(&spi3\s*\{.*?\n\};)', s, flags=re.S)
+          if m:
+            print("=== &spi3 block (after) ===")
+            print(m.group(1))
+            print()
+
+          # 抽出 &spi2_default / &spi2_sleep 區塊快速檢視（若不存在也會至少看到我們附加的版本）
+          m2 = re.findall(r'(&spi2_(?:default|sleep)\s*\{.*?\n\};)', s, flags=re.S)
+          if m2:
+            print("=== &spi2_default / &spi2_sleep (after) ===")
+            for blk in m2:
+              print(blk)
+              print()
+
+          # 整份 overlay 加上行號印出，方便定位格式錯誤
+          print("=== FULL xiao_ble.overlay (after) with line numbers ===")
+          for i, line in enumerate(s.splitlines(), 1):
+            print(f"{i:04d}: {line}")
           PY
+
 
 
 
