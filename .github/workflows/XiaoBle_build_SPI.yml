@@ -107,7 +107,7 @@ jobs:
         run: |
           echo "FILEFORMAT=${{ matrix.boards.fileformat }}" >> $GITHUB_ENV
           echo "BOARD=${{ matrix.boards.boardname }}" >> $GITHUB_ENV
-          echo "OUTPUT_NAME=${{ matrix.boards.filename }}_${GIT_HASH}" >> $GITHUB_ENV
+          echo "OUTPUT_NAME=${{ matrix.boards.filename }}" >> $GITHUB_ENV
 
       - name: 🗂️ Prepare Releases folder
         shell: bash
@@ -185,7 +185,6 @@ jobs:
             s += "\n"
           s += block + "\n"
 
-          # 2) 修正 &spi3：固定 pinctrl-0/1 指向 spi2_default/sleep，並更新 cs-gpios
           def patch_spi3(src: str) -> str:
             # pinctrl-0
             if re.search(r'^\s*pinctrl-0\s*=', src, flags=re.M):
@@ -202,7 +201,6 @@ jobs:
             # pinctrl-names
             if not re.search(r'^\s*pinctrl-names\s*=\s*".*default.*".*".*sleep.*"', src, flags=re.M):
               src = re.sub(r'(^)', '\t\tpinctrl-names = "default", "sleep";\n', src, count=1)
-            # cs-gpios：避免多打一個 '>'
             if re.search(r'^\s*cs-gpios\s*=', src, flags=re.M):
               src = re.sub(
                 r'(^\s*cs-gpios\s*=\s*<\s*&)[^>\s]+\s+\d+\s+(?:GPIO_[A-Z_]+|0x[0-9a-fA-F]+)(\s*>;\s*)',
@@ -219,15 +217,12 @@ jobs:
             s, flags=re.S
           )
 
-          # 3) 其他：PWM0 / zephyr,user / clk-gpios / button_0
-          # PWM0
           s = re.sub(
             r'(NRF_PSEL\s*\(\s*PWM_OUT0\s*,\s*)[01]\s*,\s*\d+(\s*\))',
             lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}",
             s
           )
 
-          # 改成整個 <...> 直接覆蓋，避免舊旗標殘留與重複
           def ensure_prop(src, prop, port, pin, flags_text):
             if re.search(rf"\b{prop}\s*=", src):
               rx = re.compile(rf"({prop}\s*=\s*)<[^>]*>(\s*;\s*)")
@@ -241,7 +236,6 @@ jobs:
           s = ensure_prop(s, "int0-gpios", INT0[0], INT0[1], " 0")
           s = ensure_prop(s, "vcc-gpios",  VCC[0],  VCC[1],  " 0")
 
-          # clk-gpios：只改腳位，不動 flags（支援註解與未註解）
           s = re.sub(
             r'(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
             lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}",
@@ -253,7 +247,6 @@ jobs:
             s, flags=re.M
           )
 
-          # button_0：保留 0x11（PULL_UP | ACTIVE_LOW）
           s = re.sub(
             r'(button_0\s*\{[^{}]*?gpios\s*=\s*)<[^>]*>(\s*;)',
             lambda m: f'{m.group(1)}<&gpio{SW0[0]} {SW0[1]} 0x11>{m.group(2)}',
@@ -261,34 +254,8 @@ jobs:
           )
 
           p.write_text(s)
-
-          # ====== 印檢查資訊 ======
-          print("=== Pin Summary ===")
-          print(f"SCK=P{SCK[0]}.{SCK[1]}  MOSI=P{MOSI[0]}.{MOSI[1]}  MISO=P{MISO[0]}.{MISO[1]}")
-          print(f"CS =P{CS[0]}.{CS[1]}   PWM0=P{PWM0[0]}.{PWM0[1]}  LED=P{LED[0]}.{LED[1]}")
-          print(f"INT=P{INT0[0]}.{INT0[1]} CLK=P{CLK[0]}.{CLK[1]}  VCC=P{VCC[0]}.{VCC[1]}  SW0=P{SW0[0]}.{SW0[1]}")
-          print()
-
-          m = re.search(r'(&spi3\s*\{.*?\n\};)', s, flags=re.S)
-          if m:
-            print("=== &spi3 block (after) ===")
-            print(m.group(1))
-            print()
-
-          m2 = re.findall(r'(&spi2_(?:default|sleep)\s*\{.*?\n\};)', s, flags=re.S)
-          if m2:
-            print("=== &spi2_default / &spi2_sleep (after) ===")
-            for blk in m2:
-              print(blk)
-              print()
-
-          print("=== FULL xiao_ble.overlay (after) with line numbers ===")
-          for i, line in enumerate(s.splitlines(), 1):
-            print(f"{i:04d}: {line}")
           PY
 
-
-      # === 五項機能スイッチ（讀 env） ===
       - name: 🔧 External Sensor Clock
         shell: bash
         run: |
