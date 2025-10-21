@@ -123,7 +123,7 @@ jobs:
           cd zephyr-workspace
           cp "SlimeVR-Tracker-nRF/boards/xiao_ble.overlay" "Releases/dts/xiao_ble.before.overlay" || true
 
-      - name: ✍️ Apply SPI & GPIO pin mapping (no cleanup)
+      - name: ✍️ Apply SPI & GPIO pin mapping (override spi2_* states)
         if: ${{ matrix.boards.type == 'tracker' }}
         shell: bash
         run: |
@@ -137,12 +137,17 @@ jobs:
 
           def parse_pin(v: str):
             v = v.strip().upper().replace('P','')
-            if '.' in v: port, pin = v.split('.',1)
-            else:        port, pin = ('0', v)
+            if '.' in v:
+              port, pin = v.split('.',1)
+            else:
+              port, pin = ('0', v)
             port, pin = int(port), int(pin)
-            if port not in (0,1): sys.exit(f"Invalid port P{port}")
-            if port==1 and not (0 <= pin <= 15): sys.exit("Port 1 supports only 0..15")
-            if not (0 <= pin <= 31): sys.exit("Pin must be 0..31")
+            if port not in (0,1):
+              sys.exit(f"Invalid port P{port}")
+            if port == 1 and not (0 <= pin <= 15):
+              sys.exit("Port 1 supports only 0..15")
+            if not (0 <= pin <= 31):
+              sys.exit("Pin must be 0..31")
             return port, pin
 
           E = os.environ
@@ -157,9 +162,8 @@ jobs:
           VCC  = parse_pin(E["VCC"])
           SW0  = parse_pin(E["SW0"])
 
-          # === 只附加：覆寫既有 pinctrl 狀態 &spi2_default / &spi2_sleep ===
+          # 覆寫 pinctrl 狀態：&spi2_default / &spi2_sleep（讓 &spi3 使用）
           block = f"""
-          /* === AUTOGEN: override spi2 pinmap begin === */
           &spi2_default {{
             group1 {{
               /* SCK/MOSI/MISO */
@@ -176,25 +180,37 @@ jobs:
               low-power-enable;
             }};
           }};
-          /* === AUTOGEN: override spi2 pinmap end === */
           """
 
-          # 直接附加到檔尾（不清除任何舊內容）
-          if not s.endswith("\n"): s += "\n"
+          if not s.endswith("\n"):
+            s += "\n"
           s += block + "\n"
 
-          # ── 其餘維持原本行為：CS、PWM0、zephyr,user、CLK、button_0 ──
+          # 修正 &spi3 的 CS 腳位（保留 pinctrl-0/1 指向 spi2_default/sleep）
+          def patch_spi3(src: str) -> str:
+            if re.search(r'^\s*cs-gpios\s*=', src, flags=re.M):
+              return re.sub(
+                r'(^\s*cs-gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+(?:GPIO_[A-Z_]+|0x[0-9a-fA-F]+)(\s*>;\s*)',
+                lambda m: f"{m.group(1)}{CS[0]} {CS[1]} GPIO_ACTIVE_LOW{m.group(2)}",
+                src, flags=re.M
+              )
+            # 若原本沒有 cs-gpios，直接插入一行
+            return re.sub(r'^', f'\t\tcs-gpios = <&gpio{CS[0]} {CS[1]} GPIO_ACTIVE_LOW>;\n', src, count=1)
 
-          # 1) CS：把 &spi3 的 cs-gpios 換成環境變數指定的腳位
-          s = re.sub(r'(^\s*cs-gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+\w+(\s*>;\s*)',
-                     lambda m: f"{m.group(1)}{CS[0]} {CS[1]} GPIO_ACTIVE_LOW{m.group(2)}",
-                     s, flags=re.M)
+          s = re.sub(
+            r'(&spi3\s*\{)(.*?)(\n\};)',
+            lambda m: m.group(1) + patch_spi3(m.group(2)) + m.group(3),
+            s, flags=re.S
+          )
 
-          # 2) PWM0：重寫 PWM_OUT0 的 PSEL
-          s = re.sub(r'(NRF_PSEL\s*\(\s*PWM_OUT0\s*,\s*)[01]\s*,\s*\d+(\s*\))',
-                     lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}", s)
+          # PWM0: 更新 PWM_OUT0 psel
+          s = re.sub(
+            r'(NRF_PSEL\s*\(\s*PWM_OUT0\s*,\s*)[01]\s*,\s*\d+(\s*\))',
+            lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}",
+            s
+          )
 
-          # 3) zephyr,user：led/int0/vcc 三個屬性
+          # zephyr,user：led/int0/vcc/clk
           def ensure_prop(src, prop, port, pin, flags_text):
             if re.search(rf"\b{prop}\s*=", src):
               rx = re.compile(rf"({prop}\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)")
@@ -208,19 +224,29 @@ jobs:
           s = ensure_prop(s, "int0-gpios", INT0[0], INT0[1], " 0")
           s = ensure_prop(s, "vcc-gpios",  VCC[0], VCC[1],  " 0")
 
-          # 4) CLK：無論註解 / 未註解都改腳位（不改 flags）
-          s = re.sub(r'(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
-                     lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}", s, flags=re.M)
-          s = re.sub(r'(^\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
-                     lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}", s, flags=re.M)
+          # clk-gpios：只改腳位，不動 flags；同時支援註解/未註解
+          s = re.sub(
+            r'(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
+            lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}",
+            s, flags=re.M
+          )
+          s = re.sub(
+            r'(^\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
+            lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}",
+            s, flags=re.M
+          )
 
-          # 5) Button_0：保留 0x11（上拉 + active-low）
-          s = re.sub(r'(button_0\s*\{[^{}]*?gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+0x[0-9A-Fa-f]+(\s*>;)',
-                     lambda m: f"{m.group(1)}{SW0[0]} {SW0[1]} 0x11{m.group(2)}", s, flags=re.S)
+          # button_0：保留 0x11（PULL_UP | ACTIVE_LOW）
+          s = re.sub(
+            r'(button_0\s*\{[^{}]*?gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+0x[0-9a-fA-F]+(\s*>;)',
+            lambda m: f"{m.group(1)}{SW0[0]} {SW0[1]} 0x11{m.group(2)}",
+            s, flags=re.S
+          )
 
           p.write_text(s)
-          print("Overlay pins appended (no cleanup).")
+          print("Overrode &spi2_default/&spi2_sleep pinmaps, cs-gpios, PWM0, zephyr,user, and button_0.")
           PY
+
 
 
       # === 五項機能スイッチ（讀 env） ===
