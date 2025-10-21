@@ -204,8 +204,8 @@ jobs:
             echo "WARN: xiao_ble.before.overlay not found, skipping diff"
           fi
 
-          if [[ -f "SlimeVR-Tracker-nRF/build/zephyr/zephyr.dts" ]]; then
-            cp "SlimeVR-Tracker-nRF/build/zephyr/zephyr.dts" "Releases/dts/zephyr.final.dts"
+          if [[ -f "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.dts" ]]; then
+            cp "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.dts" "Releases/dts/zephyr.final.dts"
           fi
 
           tar -czf "Releases/${OUTPUT_NAME}_DTS.tgz" -C Releases dts
