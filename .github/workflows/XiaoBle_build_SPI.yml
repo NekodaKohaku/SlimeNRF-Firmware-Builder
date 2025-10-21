@@ -1,4 +1,4 @@
-name: Build XiaoBle Tracker (XIAO BLE)
+name: Build XiaoBle Tracker (SPI)
 
 on:
   workflow_dispatch:
@@ -110,7 +110,6 @@ jobs:
         run: |
           cd zephyr-workspace
           cp "SlimeVR-Tracker-nRF/boards/xiao_ble.overlay" "Releases/dts/xiao_ble.before.overlay" || true
-          cp "SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay" "Releases/dts/xiao_ble_sense.before.overlay" || true
 
       # === 五項機能スイッチ（讀 env） ===
       - name: 🔧 External Sensor Clock
@@ -166,10 +165,8 @@ jobs:
           cd zephyr-workspace
           if [[ "${SW0_BUTTON}" == "enabled" ]]; then
             sed -i "s#^[[:space:]]*//[[:space:]]*sw0[[:space:]]*=#\t\tsw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
-            sed -i "s#^[[:space:]]*//[[:space:]]*sw0[[:space:]]*=#\t\tsw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay
           else
             sed -i "s#^\([[:space:]]*\)sw0[[:space:]]*=#\1// sw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
-            sed -i "s#^\([[:space:]]*\)sw0[[:space:]]*=#\1// sw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay
           fi
 
       # ===== Build =====
@@ -198,10 +195,8 @@ jobs:
           cd zephyr-workspace
 
           DTS_MAIN="SlimeVR-Tracker-nRF/boards/xiao_ble.overlay"
-          DTS_SENSE="SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay"
 
           cp "$DTS_MAIN"  "Releases/dts/xiao_ble.after.overlay" || true
-          cp "$DTS_SENSE" "Releases/dts/xiao_ble_sense.after.overlay" || true
 
           if [[ -f "Releases/dts/xiao_ble.before.overlay" && -f "Releases/dts/xiao_ble.after.overlay" ]]; then
             diff -u "Releases/dts/xiao_ble.before.overlay" "Releases/dts/xiao_ble.after.overlay" > "Releases/dts/xiao_ble.pins.diff" || true
