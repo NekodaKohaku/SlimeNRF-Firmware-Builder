@@ -331,27 +331,23 @@ jobs:
           prerelease: false
           name: "Latest Firmware"
           body: |
-            Manual build of the SlimeNRF Tracker Firmware (XIAO BLE).
-
-            Commit: ${{ env.GIT_HASH }}
-            Message:
-            ${{ env.GIT_MESSAGE }}
-
+            Manual build of the SlimeNRF Tracker Firmware (XIAO BLE SPI).
             Board: ${{ env.BOARD }}
-
-            Pins:
-              SCK=${{ env.SCK }}, MOSI=${{ env.MOSI }}, MISO=${{ env.MISO }}, CS=${{ env.CS }}
-              PWM0=${{ env.PWM0 }}, LED=${{ env.LED }}, INT=${{ env.INT }}, CLK=${{ env.CLK }}, VCC=${{ env.VCC }}, SW0=${{ env.SW0 }}
-
+            
             Features:
               MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
               CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
               SW0=${{ env.SW0_BUTTON }}
 
+            Pins:
+              SCK=${{ env.SCK }}, MOSI=${{ env.MOSI }}, MISO=${{ env.MISO }}, CS=${{ env.CS }}
+              PWM0=${{ env.PWM0 }}, LED=${{ env.LED }}, INT=${{ env.INT }}, CLK=${{ env.CLK }}, VCC=${{ env.VCC }}, SW0=${{ env.SW0 }}
+
             DTS artifacts:
-              - xiao_ble.before.overlay / xiao_ble.after.overlay
+              - xiao_ble.before.overlay
+              - xiao_ble.after.overlay
               - xiao_ble.pins.diff (before vs after)
-              - zephyr.final.dts (if present)
+              - zephyr.final.dts
           files: |
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
