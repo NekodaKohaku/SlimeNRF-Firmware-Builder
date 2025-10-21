@@ -22,14 +22,26 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    # ✅ 使用者在這裡改功能開關即可
+    # ✅ 使用者在這裡改「腳位」與「功能開關」
     env:
+      # --- ピン設定 ---
+      MISO: "P1.14"
+      MOSI: "P1.15"
+      SCK:  "P1.13"
+      CS:   "P1.12"
+      PWM0: "P0.15"
+      SW0:  "P0.02"
+      LED:  "P0.17"
+      CLK:  "P0.28"
+      INT:  "P0.03"
+      VCC:  "P0.14"
+
       # --- 機能スイッチ ---
-      MAGNETOMETER: "enabled"   # enabled / disabled
-      SLEEP:        "disabled"  # enabled / disabled
-      SENSOR_CLOCK: "enabled"   # enabled / disabled
-      EXTRA_ACTIONS: "enabled"   # enabled / disabled
-      SW0_BUTTON:   "disabled"  # enabled / disabled
+      MAGNETOMETER: "enabled"    # enabled / disabled
+      SLEEP:        "disabled"   # enabled / disabled
+      SENSOR_CLOCK: "enabled"    # enabled / disabled  (只是註解/解註 clk-gpios，不改你設定的腳位)
+      EXTRA_ACTIONS:"enabled"    # enabled / disabled
+      SW0_BUTTON:   "disabled"   # enabled / disabled  (僅控制是否註解 sw0 行；實際按鈕腳位仍會寫入 buttons)
 
     steps:
       - name: 💻 Acquire code (root)
@@ -111,6 +123,105 @@ jobs:
           cd zephyr-workspace
           cp "SlimeVR-Tracker-nRF/boards/xiao_ble.overlay" "Releases/dts/xiao_ble.before.overlay" || true
 
+      # === ✍️ 以環境變數改 SPI / GPIO 腳位（覆寫 pinctrl 與 overlay 屬性） ===
+      - name: ✍️ Apply SPI & GPIO pin mapping
+        if: ${{ matrix.boards.type == 'tracker' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+          python - <<'PY'
+          import os, re, pathlib, sys
+
+          p = pathlib.Path("SlimeVR-Tracker-nRF/boards/xiao_ble.overlay")
+          s = p.read_text()
+
+          def parse_pin(v: str):
+            v = v.strip().upper().replace('P','')
+            if '.' in v: port, pin = v.split('.',1)
+            else:        port, pin = ('0', v)
+            port, pin = int(port), int(pin)
+            if port not in (0,1): sys.exit(f"Invalid port P{port}")
+            if port==1 and not (0 <= pin <= 15): sys.exit("Port 1 supports only 0..15")
+            if not (0 <= pin <= 31): sys.exit("Pin must be 0..31")
+            return port, pin
+
+          E = os.environ
+          SCK  = parse_pin(E["SCK"])
+          MOSI = parse_pin(E["MOSI"])
+          MISO = parse_pin(E["MISO"])
+          CS   = parse_pin(E["CS"])
+          PWM0 = parse_pin(E["PWM0"])
+          LED  = parse_pin(E["LED"])
+          INT0 = parse_pin(E["INT"])
+          CLK  = parse_pin(E["CLK"])
+          VCC  = parse_pin(E["VCC"])
+          SW0  = parse_pin(E["SW0"])
+
+          # --- 1) 覆寫 pinctrl: spi2_default / spi2_sleep（供 spi3 使用） ---
+          AUTOGEN_BEGIN = "/* === AUTOGEN: SPI pinmap begin === */"
+          AUTOGEN_END   = "/* === AUTOGEN: SPI pinmap end === */"
+          block = f"""{AUTOGEN_BEGIN}
+          &spi2_default {{
+            group1 {{
+              psels = <NRF_PSEL(SPIM_SCK, {SCK[0]}, {SCK[1]})>,
+                      <NRF_PSEL(SPIM_MOSI,{MOSI[0]}, {MOSI[1]})>,
+                      <NRF_PSEL(SPIM_MISO,{MISO[0]}, {MISO[1]})>;
+            }};
+          }};
+          &spi2_sleep {{
+            group1 {{
+              psels = <NRF_PSEL(SPIM_SCK, {SCK[0]}, {SCK[1]})>,
+                      <NRF_PSEL(SPIM_MOSI,{MOSI[0]}, {MOSI[1]})>,
+                      <NRF_PSEL(SPIM_MISO,{MISO[0]}, {MISO[1]})>;
+              low-power-enable;
+            }};
+          }};
+          {AUTOGEN_END}
+          """
+
+          # 移除舊自動區塊再附加最新內容
+          s = re.sub(rf"{re.escape(AUTOGEN_BEGIN)}.*?{re.escape(AUTOGEN_END)}", "", s, flags=re.S)
+          if not s.endswith("\n"): s += "\n"
+          s += "\n" + block + "\n"
+
+          # --- 2) 更新 spi3 的 CS 腳位 ---
+          s = re.sub(r'(^\s*cs-gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+0x[0-9a-fA-F]+(\s*>;\s*)',
+                     lambda m: f"{m.group(1)}{CS[0]} {CS[1]} 0x1{m.group(2)}", s, flags=re.M)
+
+          # --- 3) PWM0: 將 NRF_PSEL(PWM_OUT0, ..) 改到新腳位 ---
+          s = re.sub(r'(NRF_PSEL\s*\(\s*PWM_OUT0\s*,\s*)[01]\s*,\s*\d+(\s*\))',
+                     lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}", s)
+
+          # --- 4) zephyr,user block 內的各 GPIO ---
+          def ensure_prop(src, prop, port, pin, flags_text):
+            if re.search(rf"\b{prop}\s*=", src):
+              rx = re.compile(rf"({prop}\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)")
+              return rx.sub(lambda m: f"{m.group(1)}{port} {pin}{flags_text}{m.group(2)}", src)
+            uz = re.compile(r"(zephyr,user\s*\{)(.*?)(\n\t*\};)", re.S)
+            def add(m):
+              return f"{m.group(1)}{m.group(2)}\n\t\t{prop} = <&gpio{port} {pin}{flags_text}>;{m.group(3)}"
+            return uz.sub(add, src)
+
+          s = ensure_prop(s, "led-gpios",  LED[0], LED[1],  " (GPIO_OPEN_DRAIN|GPIO_ACTIVE_LOW)")
+          s = ensure_prop(s, "int0-gpios", INT0[0], INT0[1], " 0")
+          s = ensure_prop(s, "vcc-gpios",  VCC[0], VCC[1],  " 0")
+
+          # clk-gpios（同時覆蓋註解與非註解版本的腳位，不改 flags）
+          s = re.sub(r'(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
+                     lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}", s, flags=re.M)
+          s = re.sub(r'(^\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
+                     lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}", s, flags=re.M)
+
+          # --- 5) Button_0（實際按鍵）---
+          # 將 buttons/button_0 的 gpios 改到 SW0，保留 0x11（上拉+active-low）
+          s = re.sub(r'(button_0\s*\{[^{}]*?gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+0x[0-9a-fA-F]+(\s*>;)',
+                     lambda m: f"{m.group(1)}{SW0[0]} {SW0[1]} 0x11{m.group(2)}", s, flags=re.S)
+
+          p.write_text(s)
+          print("Overlay pins updated for SPI + GPIO.")
+          PY
+
       # === 五項機能スイッチ（讀 env） ===
       - name: 🔧 External Sensor Clock
         shell: bash
@@ -159,14 +270,14 @@ jobs:
             } >> SlimeVR-Tracker-nRF/prj.conf
           fi
 
-      - name: 🔧 SW0 Button
+      - name: 🔧 SW0 Button (comment/uncomment helper)
         shell: bash
         run: |
           cd zephyr-workspace
           if [[ "${SW0_BUTTON}" == "enabled" ]]; then
-            sed -i "s#^[[:space:]]*//[[:space:]]*sw0[[:space:]]*=#\t\tsw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+            sed -i "s#^[[:space:]]*//[[:space:]]*sw0[[:space:]]*=#\t\tsw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay || true
           else
-            sed -i "s#^\([[:space:]]*\)sw0[[:space:]]*=#\1// sw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+            sed -i "s#^\([[:space:]]*\)sw0[[:space:]]*=#\1// sw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay || true
           fi
 
       # ===== Build =====
@@ -238,6 +349,11 @@ jobs:
             ${{ env.GIT_MESSAGE }}
 
             Board: ${{ env.BOARD }}
+
+            Pins:
+              SCK=${{ env.SCK }}, MOSI=${{ env.MOSI }}, MISO=${{ env.MISO }}, CS=${{ env.CS }}
+              PWM0=${{ env.PWM0 }}, LED=${{ env.LED }}, INT=${{ env.INT }}, CLK=${{ env.CLK }}, VCC=${{ env.VCC }}, SW0=${{ env.SW0 }}
+
             Features:
               MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
               CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
