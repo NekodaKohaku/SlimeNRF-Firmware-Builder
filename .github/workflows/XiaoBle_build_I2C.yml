@@ -7,8 +7,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: write
+permissions: write-all
 
 jobs:
   build:
@@ -17,33 +16,20 @@ jobs:
       matrix:
         boards:
           - boardname: "xiao_ble/nrf52840"
-            clk: "disabled"
             type: "tracker"
-            extraaction: "enabled"
             fileformat: "uf2"
             filename: "SlimeNRF_Tracker_Mag_XIAO"
-            magnetometer: "enabled"
-            sleep: "enabled"
-            sw0: "disabled"
 
     runs-on: ubuntu-latest
 
+    # ✅ 使用者在這裡改功能開關即可
     env:
-      # --- ピン設定 ---
-      SDA: "P0.06"
-      SCL: "P0.08"
-      PWM0: "P0.15"
-      LED:  "P0.17"
-      INT:  "P0.03"
-      VCC:  "P0.14"
-      CLK:  "P0.28"
-
       # --- 機能スイッチ ---
-      MAGNETOMETER: "enabled"
-      SLEEP:        "disabled"
-      SENSOR_CLOCK: "enabled"
-      EXTRA_ACTIONS: "enabled"
-      SW0_BUTTON:   "disabled"
+      MAGNETOMETER: "enabled"   # enabled / disabled
+      SLEEP:        "disabled"  # enabled / disabled
+      SENSOR_CLOCK: "enabled"   # enabled / disabled
+      EXTRA_ACTIONS:"enabled"   # enabled / disabled
+      SW0_BUTTON:   "disabled"  # enabled / disabled
 
     steps:
       - name: 💻 Acquire code (root)
@@ -110,11 +96,6 @@ jobs:
           echo "FILEFORMAT=${{ matrix.boards.fileformat }}" >> $GITHUB_ENV
           echo "BOARD=${{ matrix.boards.boardname }}" >> $GITHUB_ENV
           echo "OUTPUT_NAME=${{ matrix.boards.filename }}_${GIT_HASH}" >> $GITHUB_ENV
-          echo "MATRIX_CLK=${{ matrix.boards.clk }}" >> $GITHUB_ENV
-          echo "MATRIX_EXTRA=${{ matrix.boards.extraaction }}" >> $GITHUB_ENV
-          echo "MATRIX_MAG=${{ matrix.boards.magnetometer }}" >> $GITHUB_ENV
-          echo "MATRIX_SLEEP=${{ matrix.boards.sleep }}" >> $GITHUB_ENV
-          echo "MATRIX_SW0=${{ matrix.boards.sw0 }}" >> $GITHUB_ENV
 
       - name: 🗂️ Prepare Releases folder
         shell: bash
@@ -131,110 +112,18 @@ jobs:
           cp "SlimeVR-Tracker-nRF/boards/xiao_ble.overlay" "Releases/dts/xiao_ble.before.overlay" || true
           cp "SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay" "Releases/dts/xiao_ble_sense.before.overlay" || true
 
-      - name: ✍️ Apply pin mapping to xiao_ble.overlay
-        if: ${{ matrix.boards.type == 'tracker' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd zephyr-workspace
-          python - <<'PY'
-          import os, re, pathlib, sys
-          p = pathlib.Path("SlimeVR-Tracker-nRF/boards/xiao_ble.overlay")
-          s = p.read_text()
-
-          def parse_pin(v: str):
-            v = v.strip().upper().replace('P','')
-            if '.' in v: port, pin = v.split('.',1)
-            else:        port, pin = ('0', v)
-            port, pin = int(port), int(pin)
-            if port not in (0,1): sys.exit(f"Invalid port P{port}")
-            if port==1 and not (0 <= pin <= 15): sys.exit("Port 1 supports only 0..15")
-            if not (0 <= pin <= 31): sys.exit("Pin must be 0..31")
-            return port, pin
-
-          env = os.environ
-          SDA  = parse_pin(env["SDA"])
-          SCL  = parse_pin(env["SCL"])
-          PWM0 = parse_pin(env["PWM0"])
-          LED  = parse_pin(env["LED"])
-          INT0 = parse_pin(env["INT"])
-          VCC  = parse_pin(env["VCC"])
-          CLK  = parse_pin(env["CLK"])
-
-          def sub_state(src, state, sda, scl):
-            pat = re.compile(rf"(&{state}\s*\{{\s*group1\s*\{{)(.*?)(\}}\s*\}})", re.S)
-            def repl(m):
-              head, body, tail = m.groups()
-              line = f"psels = <NRF_PSEL(TWIM_SDA, {sda[0]}, {sda[1]})>, <NRF_PSEL(TWIM_SCL, {scl[0]}, {scl[1]})>;"
-              if re.search(r"\bpsels\s*=", body):
-                body = re.sub(r"psels\s*=.*?;", line, body, flags=re.S)
-              else:
-                body = f"\n\t\t{line}\n" + body
-              return head + body + tail
-            return pat.sub(repl, src)
-
-          s = sub_state(s, "i2c1_default", SDA, SCL)
-          s = sub_state(s, "i2c1_sleep",   SDA, SCL)
-
-          rx = re.compile(r"(NRF_PSEL\s*\(\s*PWM_OUT0\s*,\s*)[01]\s*,\s*\d+(\s*\))")
-          s  = rx.sub(lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}", s)
-
-          def ensure_prop(src, prop, port, pin, flags_text):
-            if re.search(rf"\b{prop}\s*=", src):
-              rx = re.compile(rf"({prop}\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)")
-              return rx.sub(lambda m: f"{m.group(1)}{port} {pin}{flags_text}{m.group(2)}", src)
-            uz = re.compile(r"(zephyr,user\s*\{)(.*?)(\n\t*\};)", re.S)
-            def add(m):
-              return f"{m.group(1)}{m.group(2)}\n\t\t{prop} = <&gpio{port} {pin}{flags_text}>;{m.group(3)}"
-            return uz.sub(add, src)
-          s = ensure_prop(s, "led-gpios",  LED[0], LED[1],  " (GPIO_OPEN_DRAIN|GPIO_ACTIVE_LOW)")
-          s = ensure_prop(s, "int0-gpios", INT0[0], INT0[1], " 0")
-          s = ensure_prop(s, "vcc-gpios",  VCC[0], VCC[1],  " 0")
-
-          s = re.sub(r"(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)",
-                     lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}", s, flags=re.M)
-          s = re.sub(r"(^\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)",
-                     lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}", s, flags=re.M)
-
-          p.write_text(s)
-          print("xiao_ble.overlay pins updated.")
-          PY
-
-      - name: 🚧 I2C-only
-        if: ${{ matrix.boards.type == 'tracker' }}
+      # === 五項機能スイッチ（讀 env） ===
+      - name: 🔧 External Sensor Clock
         shell: bash
         run: |
           cd zephyr-workspace
-          sed -i -E '/&spi3[[:space:]]*\{/,/^\}/ s/^([[:space:]]*pinctrl-(names|0|1)[[:space:]]*=.*)/\/\/ \1/' \
-            SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
-
-          sed -i -E '/&spi3[[:space:]]*\{/,/^\}/ s/status[[:space:]]*=[[:space:]]*"okay";/status = "disabled";/' \
-            SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
-
-          echo "Neutralized SPI3 pinctrl and disabled node for I2C-only build."
-
-
-      - name: 🔧 Disabling External Clock
-        if: ${{ env.SENSOR_CLOCK == 'disabled' }}
-        shell: bash
-        run: |
-          cd zephyr-workspace
-          find='clk-gpios[ \t]='
-          replace='// clk-gpios ='
-          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
-          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay
-          printf "\nCONFIG_USE_SENSOR_CLOCK=n\n" >> SlimeVR-Tracker-nRF/prj.conf
-
-      - name: 🔧 Enabling External Clock
-        if: ${{ env.SENSOR_CLOCK == 'enabled' }}
-        shell: bash
-        run: |
-          cd zephyr-workspace
-          find="\/\/\sclk-gpios"
-          replace="clk-gpios"
-          sed -i "s/$find/$replace/g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
-          sed -i "s/$find/$replace/g" SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay
-          printf "\nCONFIG_USE_SENSOR_CLOCK=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          if [[ "${SENSOR_CLOCK}" == "enabled" ]]; then
+            sed -i "s#^[[:space:]]*//[[:space:]]*clk-gpios#\t\tclk-gpios#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+            printf "\nCONFIG_USE_SENSOR_CLOCK=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            sed -i "s#^\([[:space:]]*\)clk-gpios[[:space:]]*=#\1// clk-gpios =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+            printf "\nCONFIG_USE_SENSOR_CLOCK=n\n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
 
       - name: 🔧 Extra Actions
         shell: bash
@@ -283,6 +172,7 @@ jobs:
             sed -i "s#^\([[:space:]]*\)sw0[[:space:]]*=#\1// sw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay
           fi
 
+      # ===== Build =====
       - name: 🔨 Build SlimeVR-Tracker-nRF - ${{ matrix.boards.boardname }}
         if: ${{ matrix.boards.type == 'tracker' }}
         shell: bash
@@ -300,6 +190,7 @@ jobs:
           mv "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}" \
              "Releases/${OUTPUT_NAME}.${FILEFORMAT}"
 
+      # ===== DTS / overlay 收集、diff 與打包 =====
       - name: Collect DTS (before/after) & Diff, then Package
         shell: bash
         run: |
@@ -352,17 +243,10 @@ jobs:
             ${{ env.GIT_MESSAGE }}
 
             Board: ${{ env.BOARD }}
-            Pins:
-              SDA=${{ env.SDA }}, SCL=${{ env.SCL }},
-              PWM0=${{ env.PWM0 }}, LED=${{ env.LED }},
-              INT=${{ env.INT }}, VCC=${{ env.VCC }}, CLK=${{ env.CLK }}
-
             Features:
               MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
               CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
               SW0=${{ env.SW0_BUTTON }}
-
-            (Matrix defaults at build: CLK=${{ env.MATRIX_CLK }}, EXTRA=${{ env.MATRIX_EXTRA }}, MAG=${{ env.MATRIX_MAG }}, SLEEP=${{ env.MATRIX_SLEEP }}, SW0=${{ env.MATRIX_SW0 }})
 
             DTS artifacts:
               - xiao_ble.before.overlay / xiao_ble.after.overlay
