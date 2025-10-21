@@ -39,9 +39,9 @@ jobs:
       # --- 機能スイッチ ---
       MAGNETOMETER: "enabled"    # enabled / disabled
       SLEEP:        "disabled"   # enabled / disabled
-      SENSOR_CLOCK: "enabled"    # enabled / disabled  (只是註解/解註 clk-gpios，不改你設定的腳位)
-      EXTRA_ACTIONS: "enabled"    # enabled / disabled
-      SW0_BUTTON:   "disabled"   # enabled / disabled  (僅控制是否註解 sw0 行；實際按鈕腳位仍會寫入 buttons)
+      SENSOR_CLOCK: "enabled"    # enabled / disabled
+      EXTRA_ACTIONS:"enabled"    # enabled / disabled
+      SW0_BUTTON:   "disabled"   # enabled / disabled
 
     steps:
       - name: 💻 Acquire code (root)
@@ -123,7 +123,7 @@ jobs:
           cd zephyr-workspace
           cp "SlimeVR-Tracker-nRF/boards/xiao_ble.overlay" "Releases/dts/xiao_ble.before.overlay" || true
 
-      # === ✍️ 以環境變數改 SPI / GPIO 腳位（覆寫 pinctrl 與 overlay 屬性） ===
+      # === ✍️ 以環境變數改 SPI / GPIO 腳位（新增自家 pinctrl 節點，並讓 spi3 指向它們） ===
       - name: ✍️ Apply SPI & GPIO pin mapping
         if: ${{ matrix.boards.type == 'tracker' }}
         shell: bash
@@ -158,34 +158,49 @@ jobs:
           VCC  = parse_pin(E["VCC"])
           SW0  = parse_pin(E["SW0"])
 
-          # --- 1) 覆寫 pinctrl: spi2_default / spi2_sleep（供 spi3 使用） ---
+          # --- 1) 在 &pinctrl 底下新增我們自己的 pin 節點（避免動到 spi2_* 原件）---
           AUTOGEN_BEGIN = "/* === AUTOGEN: SPI pinmap begin === */"
           AUTOGEN_END   = "/* === AUTOGEN: SPI pinmap end === */"
-          block = f"""{AUTOGEN_BEGIN}
-          &spi2_default {{
-            group1 {{
-              psels = <NRF_PSEL(SPIM_SCK, {SCK[0]}, {SCK[1]})>,
-                      <NRF_PSEL(SPIM_MOSI,{MOSI[0]}, {MOSI[1]})>,
-                      <NRF_PSEL(SPIM_MISO,{MISO[0]}, {MISO[1]})>;
+          frag = f"""
+          {AUTOGEN_BEGIN}
+          &pinctrl {{
+            spi_autogen_default: spi_autogen_default {{
+              group1 {{
+                psels = <NRF_PSEL(SPIM_SCK,  {SCK[0]},  {SCK[1]})>,
+                        <NRF_PSEL(SPIM_MOSI, {MOSI[0]}, {MOSI[1]})>,
+                        <NRF_PSEL(SPIM_MISO, {MISO[0]}, {MISO[1]})>;
+              }};
             }};
-          }};
-          &spi2_sleep {{
-            group1 {{
-              psels = <NRF_PSEL(SPIM_SCK, {SCK[0]}, {SCK[1]})>,
-                      <NRF_PSEL(SPIM_MOSI,{MOSI[0]}, {MOSI[1]})>,
-                      <NRF_PSEL(SPIM_MISO,{MISO[0]}, {MISO[1]})>;
-              low-power-enable;
+            spi_autogen_sleep: spi_autogen_sleep {{
+              group1 {{
+                psels = <NRF_PSEL(SPIM_SCK,  {SCK[0]},  {SCK[1]})>,
+                        <NRF_PSEL(SPIM_MOSI, {MOSI[0]}, {MOSI[1]})>,
+                        <NRF_PSEL(SPIM_MISO, {MISO[0]}, {MISO[1]})>;
+                low-power-enable;
+              }};
             }};
           }};
           {AUTOGEN_END}
-          """
+          """.strip()
 
-          # 移除舊自動區塊再附加最新內容
           s = re.sub(rf"{re.escape(AUTOGEN_BEGIN)}.*?{re.escape(AUTOGEN_END)}", "", s, flags=re.S)
           if not s.endswith("\n"): s += "\n"
-          s += "\n" + block + "\n"
+          s += "\n" + frag + "\n"
 
-          # --- 2) 更新 spi3 的 CS 腳位 ---
+          # --- 2) 讓 &spi3 使用我們的 pinctrl，並設定 CS 腳 ---
+          def patch_spi3(m):
+            head, body, tail = m.group(1), m.group(2), m.group(3)
+            # 刪舊 pinctrl-0/1
+            body = re.sub(r"^\s*pinctrl-0\s*=.*?;\s*", "", body, flags=re.M)
+            body = re.sub(r"^\s*pinctrl-1\s*=.*?;\s*", "", body, flags=re.M)
+            # 加上新的 pinctrl-0/1
+            body += "\n\t\tpinctrl-0 = < &spi_autogen_default >;"
+            body += "\n\t\tpinctrl-1 = < &spi_autogen_sleep >;"
+            return head + body + tail
+
+          s = re.sub(r"(&spi3\s*\{)(.*?)(\n\};)", patch_spi3, s, flags=re.S)
+
+          # CS: cs-gpios = < &gpioX PIN 0x1 >  (active low)
           s = re.sub(r'(^\s*cs-gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+0x[0-9a-fA-F]+(\s*>;\s*)',
                      lambda m: f"{m.group(1)}{CS[0]} {CS[1]} 0x1{m.group(2)}", s, flags=re.M)
 
@@ -214,12 +229,11 @@ jobs:
                      lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}", s, flags=re.M)
 
           # --- 5) Button_0（實際按鍵）---
-          # 將 buttons/button_0 的 gpios 改到 SW0，保留 0x11（上拉+active-low）
           s = re.sub(r'(button_0\s*\{[^{}]*?gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+0x[0-9a-fA-F]+(\s*>;)',
                      lambda m: f"{m.group(1)}{SW0[0]} {SW0[1]} 0x11{m.group(2)}", s, flags=re.S)
 
           p.write_text(s)
-          print("Overlay pins updated for SPI + GPIO.")
+          print("Overlay pins updated via custom pinctrl + spi3 retarget.")
           PY
 
       # === 五項機能スイッチ（讀 env） ===
