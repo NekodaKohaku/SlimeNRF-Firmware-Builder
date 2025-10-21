@@ -40,7 +40,7 @@ jobs:
       MAGNETOMETER: "enabled"    # enabled / disabled
       SLEEP:        "disabled"   # enabled / disabled
       SENSOR_CLOCK: "enabled"    # enabled / disabled  (只是註解/解註 clk-gpios，不改你設定的腳位)
-      EXTRA_ACTIONS:"enabled"    # enabled / disabled
+      EXTRA_ACTIONS: "enabled"    # enabled / disabled
       SW0_BUTTON:   "disabled"   # enabled / disabled  (僅控制是否註解 sw0 行；實際按鈕腳位仍會寫入 buttons)
 
     steps:
