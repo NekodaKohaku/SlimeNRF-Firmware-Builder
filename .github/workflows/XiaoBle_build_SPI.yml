@@ -40,7 +40,7 @@ jobs:
       MAGNETOMETER: "enabled"    # enabled / disabled
       SLEEP:        "disabled"   # enabled / disabled
       SENSOR_CLOCK: "enabled"    # enabled / disabled
-      EXTRA_ACTIONS:"enabled"    # enabled / disabled
+      EXTRA_ACTIONS: "enabled"    # enabled / disabled
       SW0_BUTTON:   "disabled"   # enabled / disabled
 
     steps:
