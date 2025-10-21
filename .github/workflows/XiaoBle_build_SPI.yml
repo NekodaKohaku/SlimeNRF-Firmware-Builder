@@ -22,7 +22,6 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    # ✅ 這裡改「腳位」與「功能開關」
     env:
       # --- ピン設定 ---
       MISO: "P1.14"
