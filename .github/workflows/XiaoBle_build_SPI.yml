@@ -18,10 +18,11 @@ jobs:
           - boardname: "xiao_ble/nrf52840"
             type: "tracker"
             fileformat: "uf2"
-            filename: "XiaoBle_SlimeNRF_Tracker_"
+            filename: "XiaoBle_SlimeNRF_Tracker"
 
     runs-on: ubuntu-latest
 
+    # ✅ ここで「ピン配列」と「機能スイッチ」を変更する
     env:
       # --- ピン設定 ---
       MISO: "P1.14"
@@ -36,11 +37,11 @@ jobs:
       VCC:  "P0.14"
 
       # --- 機能スイッチ ---
-      MAGNETOMETER: "enabled"    # enabled / disabled
-      SLEEP:        "disabled"   # enabled / disabled
-      SENSOR_CLOCK: "enabled"    # enabled / disabled  (只註解/解註 clk-gpios，不改你設定的腳位)
-      EXTRA_ACTIONS: "enabled"    # enabled / disabled
-      SW0_BUTTON:   "disabled"   # enabled / disabled  (僅控制是否註解 sw0 行；實際按鈕腳位仍會寫入 buttons)
+      MAGNETOMETER: "enabled"
+      SLEEP:        "disabled"
+      SENSOR_CLOCK: "enabled"
+      EXTRA_ACTIONS: "enabled"
+      SW0_BUTTON:   "enabled"
 
     steps:
       - name: 💻 Acquire code (root)
@@ -122,7 +123,8 @@ jobs:
           cd zephyr-workspace
           cp "SlimeVR-Tracker-nRF/boards/xiao_ble.overlay" "Releases/dts/xiao_ble.before.overlay" || true
 
-      - name: ✍️ Apply SPI & GPIO pin mapping (override spi2_* states) + print overlay
+      # === 環境変数で SPI/GPIO を上書き（&spi3 は spi2_default/sleep を参照） ===
+      - name: ✍️ Apply SPI & GPIO pin mapping (override spi2_* states)
         if: ${{ matrix.boards.type == 'tracker' }}
         shell: bash
         run: |
@@ -136,32 +138,19 @@ jobs:
 
           def parse_pin(v: str):
             v = v.strip().upper().replace('P','')
-            if '.' in v:
-              port, pin = v.split('.',1)
-            else:
-              port, pin = ('0', v)
+            port, pin = (v.split('.',1) if '.' in v else ('0', v))
             port, pin = int(port), int(pin)
-            if port not in (0,1):
-              sys.exit(f"Invalid port P{port}")
-            if port == 1 and not (0 <= pin <= 15):
-              sys.exit("Port 1 supports only 0..15")
-            if not (0 <= pin <= 31):
-              sys.exit("Pin must be 0..31")
+            if port not in (0,1): sys.exit(f"不正なポート P{port}")
+            if port == 1 and not (0 <= pin <= 15): sys.exit("Port 1 は 0..15 のみ対応")
+            if not (0 <= pin <= 31): sys.exit("ピン番号は 0..31")
             return port, pin
 
-          E = os.environ
-          SCK  = parse_pin(E["SCK"])
-          MOSI = parse_pin(E["MOSI"])
-          MISO = parse_pin(E["MISO"])
-          CS   = parse_pin(E["CS"])
-          PWM0 = parse_pin(E["PWM0"])
-          LED  = parse_pin(E["LED"])
-          INT0 = parse_pin(E["INT"])
-          CLK  = parse_pin(E["CLK"])
-          VCC  = parse_pin(E["VCC"])
+          E=os.environ
+          SCK  = parse_pin(E["SCK"]);  MOSI = parse_pin(E["MOSI"]); MISO = parse_pin(E["MISO"])
+          CS   = parse_pin(E["CS"]);   PWM0 = parse_pin(E["PWM0"]); LED  = parse_pin(E["LED"])
+          INT0 = parse_pin(E["INT"]);  CLK  = parse_pin(E["CLK"]);  VCC  = parse_pin(E["VCC"])
           SW0  = parse_pin(E["SW0"])
 
-          # 1) 覆寫 pinctrl 狀態：&spi2_default / &spi2_sleep（&spi3 會引用它們）
           block = f"""
           &spi2_default {{
             group1 {{
@@ -180,78 +169,48 @@ jobs:
             }};
           }};
           """
-          if not s.endswith("\n"):
-            s += "\n"
+          if not s.endswith("\n"): s += "\n"
           s += block + "\n"
 
           def patch_spi3(src: str) -> str:
-            # pinctrl-0
-            if re.search(r'^\s*pinctrl-0\s*=', src, flags=re.M):
-              src = re.sub(r'^\s*pinctrl-0\s*=\s*<[^;]+>;\s*',
-                           '\t\tpinctrl-0 = <&spi2_default>;\n', src, flags=re.M)
-            else:
-              src = re.sub(r'(^)', '\t\tpinctrl-0 = <&spi2_default>;\n', src, count=1)
-            # pinctrl-1
-            if re.search(r'^\s*pinctrl-1\s*=', src, flags=re.M):
-              src = re.sub(r'^\s*pinctrl-1\s*=\s*<[^;]+>;\s*',
-                           '\t\tpinctrl-1 = <&spi2_sleep>;\n', src, flags=re.M)
-            else:
-              src = re.sub(r'(^)', '\t\tpinctrl-1 = <&spi2_sleep>;\n', src, count=1)
-            # pinctrl-names
+            src = (re.sub(r'^\s*pinctrl-0\s*=\s*<[^;]+>;\s*', '\t\tpinctrl-0 = <&spi2_default>;\n', src, flags=re.M)
+                   if re.search(r'^\s*pinctrl-0\s*=', src, flags=re.M)
+                   else '\t\tpinctrl-0 = <&spi2_default>;\n' + src)
+            src = (re.sub(r'^\s*pinctrl-1\s*=\s*<[^;]+>;\s*', '\t\tpinctrl-1 = <&spi2_sleep>;\n', src, flags=re.M)
+                   if re.search(r'^\s*pinctrl-1\s*=', src, flags=re.M)
+                   else '\t\tpinctrl-1 = <&spi2_sleep>;\n' + src)
             if not re.search(r'^\s*pinctrl-names\s*=\s*".*default.*".*".*sleep.*"', src, flags=re.M):
-              src = re.sub(r'(^)', '\t\tpinctrl-names = "default", "sleep";\n', src, count=1)
+              src = '\t\tpinctrl-names = "default", "sleep";\n' + src
             if re.search(r'^\s*cs-gpios\s*=', src, flags=re.M):
               src = re.sub(
-                r'(^\s*cs-gpios\s*=\s*<\s*&)[^>\s]+\s+\d+\s+(?:GPIO_[A-Z_]+|0x[0-9a-fA-F]+)(\s*>;\s*)',
-                lambda m: f"\t\tcs-gpios = <&gpio{CS[0]} {CS[1]} GPIO_ACTIVE_LOW{m.group(2)}",
+                r'(^\s*cs-gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+(?:GPIO_[A-Z_]+|0x[0-9a-fA-F]+)(\s*>;\s*)',
+                lambda m: f"{m.group(1)}{CS[0]} {CS[1]} GPIO_ACTIVE_LOW{m.group(2)}",
                 src, flags=re.M
               )
             else:
-              src = re.sub(r'(^)', f'\t\tcs-gpios = <&gpio{CS[0]} {CS[1]} GPIO_ACTIVE_LOW>;\n', src, count=1)
+              src = '\t\tcs-gpios = <&gpio{} {} GPIO_ACTIVE_LOW>;\n'.format(CS[0], CS[1]) + src
             return src
 
-          s = re.sub(
-            r'(&spi3\s*\{)(.*?)(\n\};)',
-            lambda m: m.group(1) + patch_spi3(m.group(2)) + m.group(3),
-            s, flags=re.S
-          )
+          s = re.sub(r'(&spi3\s*\{)(.*?)(\n\};)', lambda m: m.group(1)+patch_spi3(m.group(2))+m.group(3), s, flags=re.S)
+          s = re.sub(r'(NRF_PSEL\s*\(\s*PWM_OUT0\s*,\s*)[01]\s*,\s*\d+(\s*\))',
+                     lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}", s)
 
-          s = re.sub(
-            r'(NRF_PSEL\s*\(\s*PWM_OUT0\s*,\s*)[01]\s*,\s*\d+(\s*\))',
-            lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}",
-            s
-          )
-
-          def ensure_prop(src, prop, port, pin, flags_text):
-            if re.search(rf"\b{prop}\s*=", src):
-              rx = re.compile(rf"({prop}\s*=\s*)<[^>]*>(\s*;\s*)")
+          def set_prop(src, prop, port, pin, flags_text):
+            rx = re.compile(rf'({prop}\s*=\s*)<[^>]*>(\s*;\s*)')
+            if rx.search(src):
               return rx.sub(lambda m: f"{m.group(1)}<&gpio{port} {pin}{flags_text}>{m.group(2)}", src)
             uz = re.compile(r"(zephyr,user\s*\{)(.*?)(\n\t*\};)", re.S)
-            def add(m):
-              return f"{m.group(1)}{m.group(2)}\n\t\t{prop} = <&gpio{port} {pin}{flags_text}>;{m.group(3)}"
-            return uz.sub(add, src)
+            return uz.sub(lambda m: f"{m.group(1)}{m.group(2)}\n\t\t{prop} = <&gpio{port} {pin}{flags_text}>;{m.group(3)}", src)
 
-          s = ensure_prop(s, "led-gpios",  LED[0],  LED[1],  " (GPIO_OPEN_DRAIN|GPIO_ACTIVE_LOW)")
-          s = ensure_prop(s, "int0-gpios", INT0[0], INT0[1], " 0")
-          s = ensure_prop(s, "vcc-gpios",  VCC[0],  VCC[1],  " 0")
-
-          s = re.sub(
-            r'(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
-            lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}",
-            s, flags=re.M
-          )
-          s = re.sub(
-            r'(^\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
-            lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}",
-            s, flags=re.M
-          )
-
-          s = re.sub(
-            r'(button_0\s*\{[^{}]*?gpios\s*=\s*)<[^>]*>(\s*;)',
-            lambda m: f'{m.group(1)}<&gpio{SW0[0]} {SW0[1]} 0x11>{m.group(2)}',
-            s, flags=re.S
-          )
-
+          s = set_prop(s, "led-gpios",  LED[0],  LED[1],  " (GPIO_OPEN_DRAIN|GPIO_ACTIVE_LOW)")
+          s = set_prop(s, "int0-gpios", INT0[0], INT0[1], " 0")
+          s = set_prop(s, "vcc-gpios",  VCC[0],  VCC[1],  " 0")
+          s = re.sub(r'(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
+                     lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}", s, flags=re.M)
+          s = re.sub(r'(^\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
+                     lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}", s, flags=re.M)
+          s = re.sub(r'(button_0\s*\{[^{}]*?gpios\s*=\s*)<[^>]*>(\s*;)',
+                     lambda m: f'{m.group(1)}<&gpio{SW0[0]} {SW0[1]} 0x11>{m.group(2)}', s, flags=re.S)
           p.write_text(s)
           PY
 
@@ -312,7 +271,6 @@ jobs:
             sed -i "s#^\([[:space:]]*\)sw0[[:space:]]*=#\1// sw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay || true
           fi
 
-      # ===== Build =====
       - name: 🔨 Build SlimeVR-Tracker-nRF - ${{ matrix.boards.boardname }}
         if: ${{ matrix.boards.type == 'tracker' }}
         shell: bash
@@ -330,7 +288,6 @@ jobs:
           mv "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}" \
              "Releases/${OUTPUT_NAME}.${FILEFORMAT}"
 
-      # ===== DTS / overlay 收集、diff 與打包 =====
       - name: Collect DTS (before/after) & Diff, then Package
         shell: bash
         run: |
