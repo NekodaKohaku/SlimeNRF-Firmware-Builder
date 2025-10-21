@@ -162,11 +162,7 @@ jobs:
           VCC  = parse_pin(E["VCC"])
           SW0  = parse_pin(E["SW0"])
 
-          # 0) 移除任何殘留的 spi3_user_* 狀態（避免被 *-gpios 誤引用，觸發 #gpio-cells 錯誤）
-          for lbl in ("spi3_user_default", "spi3_user_sleep"):
-            s = re.sub(rf'^\s*{lbl}\s*:\s*{lbl}\s*\{{.*?\n\}}\s*;\s*', "", s, flags=re.S|re.M)
-
-          # 1) 覆寫 pinctrl 狀態：&spi2_default / &spi2_sleep（讓 &spi3 使用）
+          # 1) 覆寫 pinctrl 狀態：&spi2_default / &spi2_sleep（&spi3 會引用它們）
           block = f"""
           &spi2_default {{
             group1 {{
@@ -206,11 +202,11 @@ jobs:
             # pinctrl-names
             if not re.search(r'^\s*pinctrl-names\s*=\s*".*default.*".*".*sleep.*"', src, flags=re.M):
               src = re.sub(r'(^)', '\t\tpinctrl-names = "default", "sleep";\n', src, count=1)
-            # cs-gpios -> &gpio{CS[0]} {CS[1]} GPIO_ACTIVE_LOW
+            # cs-gpios：避免多打一個 '>'
             if re.search(r'^\s*cs-gpios\s*=', src, flags=re.M):
               src = re.sub(
                 r'(^\s*cs-gpios\s*=\s*<\s*&)[^>\s]+\s+\d+\s+(?:GPIO_[A-Z_]+|0x[0-9a-fA-F]+)(\s*>;\s*)',
-                lambda m: f"\t\tcs-gpios = <&gpio{CS[0]} {CS[1]} GPIO_ACTIVE_LOW>{m.group(2)}",
+                lambda m: f"\t\tcs-gpios = <&gpio{CS[0]} {CS[1]} GPIO_ACTIVE_LOW{m.group(2)}",
                 src, flags=re.M
               )
             else:
@@ -224,25 +220,28 @@ jobs:
           )
 
           # 3) 其他：PWM0 / zephyr,user / clk-gpios / button_0
+          # PWM0
           s = re.sub(
             r'(NRF_PSEL\s*\(\s*PWM_OUT0\s*,\s*)[01]\s*,\s*\d+(\s*\))',
             lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}",
             s
           )
 
+          # 改成整個 <...> 直接覆蓋，避免舊旗標殘留與重複
           def ensure_prop(src, prop, port, pin, flags_text):
             if re.search(rf"\b{prop}\s*=", src):
-              rx = re.compile(rf"({prop}\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)")
-              return rx.sub(lambda m: f"{m.group(1)}{port} {pin}{flags_text}{m.group(2)}", src)
+              rx = re.compile(rf"({prop}\s*=\s*)<[^>]*>(\s*;\s*)")
+              return rx.sub(lambda m: f"{m.group(1)}<&gpio{port} {pin}{flags_text}>{m.group(2)}", src)
             uz = re.compile(r"(zephyr,user\s*\{)(.*?)(\n\t*\};)", re.S)
             def add(m):
               return f"{m.group(1)}{m.group(2)}\n\t\t{prop} = <&gpio{port} {pin}{flags_text}>;{m.group(3)}"
             return uz.sub(add, src)
 
-          s = ensure_prop(s, "led-gpios",  LED[0], LED[1],  " (GPIO_OPEN_DRAIN|GPIO_ACTIVE_LOW)")
+          s = ensure_prop(s, "led-gpios",  LED[0],  LED[1],  " (GPIO_OPEN_DRAIN|GPIO_ACTIVE_LOW)")
           s = ensure_prop(s, "int0-gpios", INT0[0], INT0[1], " 0")
-          s = ensure_prop(s, "vcc-gpios",  VCC[0], VCC[1],  " 0")
+          s = ensure_prop(s, "vcc-gpios",  VCC[0],  VCC[1],  " 0")
 
+          # clk-gpios：只改腳位，不動 flags（支援註解與未註解）
           s = re.sub(
             r'(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
             lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}",
@@ -254,9 +253,10 @@ jobs:
             s, flags=re.M
           )
 
+          # button_0：保留 0x11（PULL_UP | ACTIVE_LOW）
           s = re.sub(
-            r'(button_0\s*\{[^{}]*?gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+0x[0-9a-fA-F]+(\s*>;)',
-            lambda m: f"{m.group(1)}{SW0[0]} {SW0[1]} 0x11{m.group(2)}",
+            r'(button_0\s*\{[^{}]*?gpios\s*=\s*)<[^>]*>(\s*;)',
+            lambda m: f'{m.group(1)}<&gpio{SW0[0]} {SW0[1]} 0x11>{m.group(2)}',
             s, flags=re.S
           )
 
@@ -269,14 +269,12 @@ jobs:
           print(f"INT=P{INT0[0]}.{INT0[1]} CLK=P{CLK[0]}.{CLK[1]}  VCC=P{VCC[0]}.{VCC[1]}  SW0=P{SW0[0]}.{SW0[1]}")
           print()
 
-          # 抽出 &spi3 區塊快速檢視
           m = re.search(r'(&spi3\s*\{.*?\n\};)', s, flags=re.S)
           if m:
             print("=== &spi3 block (after) ===")
             print(m.group(1))
             print()
 
-          # 抽出 &spi2_default / &spi2_sleep 區塊快速檢視（若不存在也會至少看到我們附加的版本）
           m2 = re.findall(r'(&spi2_(?:default|sleep)\s*\{.*?\n\};)', s, flags=re.S)
           if m2:
             print("=== &spi2_default / &spi2_sleep (after) ===")
@@ -284,13 +282,10 @@ jobs:
               print(blk)
               print()
 
-          # 整份 overlay 加上行號印出，方便定位格式錯誤
           print("=== FULL xiao_ble.overlay (after) with line numbers ===")
           for i, line in enumerate(s.splitlines(), 1):
             print(f"{i:04d}: {line}")
           PY
-
-
 
 
       # === 五項機能スイッチ（讀 env） ===
