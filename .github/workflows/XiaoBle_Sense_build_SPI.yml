@@ -1,0 +1,258 @@
+name: Build XiaoBle Sense Tracker (XIAO BLE)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: write-all
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        boards:
+          - boardname: "xiao_ble/nrf52840"
+            type: "tracker"
+            fileformat: "uf2"
+            filename: "SlimeNRF_Tracker_Mag_XIAO"
+
+    runs-on: ubuntu-latest
+
+    # ✅ 使用者在這裡改功能開關即可
+    env:
+      # --- 機能スイッチ ---
+      MAGNETOMETER: "enabled"   # enabled / disabled
+      SLEEP:        "disabled"  # enabled / disabled
+      SENSOR_CLOCK: "enabled"   # enabled / disabled
+      EXTRA_ACTIONS: "enabled"   # enabled / disabled
+      SW0_BUTTON:   "disabled"  # enabled / disabled
+
+    steps:
+      - name: 💻 Acquire code (root)
+        uses: actions/checkout@v5
+
+      - name: 📝 Put commit hash/name in env variables
+        shell: bash
+        run: |
+          echo "GIT_HASH=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+          {
+            echo "GIT_MESSAGE<<EOF"
+            git log -1 --pretty=%B
+            echo "EOF"
+          } >> $GITHUB_ENV
+
+      - name: 🧹 Clean landing folder for workspace repo
+        shell: bash
+        run: |
+          rm -rf zephyr-workspace/SlimeNRF-CI
+
+      - name: 💻 Acquire code (workspace)
+        uses: actions/checkout@v5
+        with:
+          path: zephyr-workspace/SlimeNRF-CI
+
+      - name: 🧰 Install Dependencies + Python venv + West
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git cmake ninja-build gperf ccache dfu-util device-tree-compiler wget \
+            python3-dev python3-pip python3-setuptools python3-tk python3-wheel python3-venv \
+            xz-utils file make gcc gcc-multilib g++-multilib libsdl2-dev libmagic1
+          python3 -m venv "$HOME/.venv"
+          "$HOME/.venv/bin/python" -m pip install --upgrade pip
+          "$HOME/.venv/bin/python" -m pip install west ninja
+          echo "$HOME/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: 🪁 Install Zephyr SDK
+        shell: bash
+        run: |
+          wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
+          tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C "$HOME"/
+          "$HOME/zephyr-sdk-0.17.2/setup.sh" -c -t arm-zephyr-eabi
+
+      - name: ♻️ Initialize Zephyr Workspace
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          rm -rf .west
+          west init -l SlimeNRF-CI
+          west update --narrow -o=--depth=1
+          west zephyr-export
+
+      - name: 🐍 Install Python Dependencies
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          python -m pip install -r zephyr/scripts/requirements.txt
+
+      - name: 🔧 Derive build variables (env)
+        shell: bash
+        run: |
+          echo "FILEFORMAT=${{ matrix.boards.fileformat }}" >> $GITHUB_ENV
+          echo "BOARD=${{ matrix.boards.boardname }}" >> $GITHUB_ENV
+          echo "OUTPUT_NAME=${{ matrix.boards.filename }}_${GIT_HASH}" >> $GITHUB_ENV
+
+      - name: 🗂️ Prepare Releases folder
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          rm -rf Releases
+          mkdir -p Releases/dts
+
+      - name: 📸 Snapshot DTS BEFORE modifications
+        if: ${{ matrix.boards.type == 'tracker' }}
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          cp "SlimeVR-Tracker-nRF/boards/xiao_ble.overlay" "Releases/dts/xiao_ble.before.overlay" || true
+          cp "SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay" "Releases/dts/xiao_ble_sense.before.overlay" || true
+
+      # === 五項機能スイッチ（讀 env） ===
+      - name: 🔧 External Sensor Clock
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${SENSOR_CLOCK}" == "enabled" ]]; then
+            sed -i "s#^[[:space:]]*//[[:space:]]*clk-gpios#\t\tclk-gpios#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+            printf "\nCONFIG_USE_SENSOR_CLOCK=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            sed -i "s#^\([[:space:]]*\)clk-gpios[[:space:]]*=#\1// clk-gpios =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+            printf "\nCONFIG_USE_SENSOR_CLOCK=n\n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+
+      - name: 🔧 Extra Actions
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${EXTRA_ACTIONS}" == "enabled" ]]; then
+            printf "\nCONFIG_USER_EXTRA_ACTIONS=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            printf "\nCONFIG_USER_EXTRA_ACTIONS=n\n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+
+      - name: 🔧 Magnetometer
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${MAGNETOMETER}" == "enabled" ]]; then
+            printf "\nCONFIG_SENSOR_USE_MAG=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            printf "\nCONFIG_SENSOR_USE_MAG=n\n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+
+      - name: 🔧 Sleep
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${SLEEP}" == "enabled" ]]; then
+            printf "\nCONFIG_USE_IMU_WAKE_UP=y\nCONFIG_USE_ACTIVE_TIMEOUT=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            {
+              printf "\nCONFIG_USE_IMU_WAKE_UP=n\n"
+              printf "CONFIG_USE_ACTIVE_TIMEOUT=n\n"
+              printf "CONFIG_SENSOR_LP_TIMEOUT=300000\n"
+              printf "CONFIG_SENSOR_USE_LOW_POWER_2=n\n"
+            } >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+
+      - name: 🔧 SW0 Button
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${SW0_BUTTON}" == "enabled" ]]; then
+            sed -i "s#^[[:space:]]*//[[:space:]]*sw0[[:space:]]*=#\t\tsw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+            sed -i "s#^[[:space:]]*//[[:space:]]*sw0[[:space:]]*=#\t\tsw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay
+          else
+            sed -i "s#^\([[:space:]]*\)sw0[[:space:]]*=#\1// sw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+            sed -i "s#^\([[:space:]]*\)sw0[[:space:]]*=#\1// sw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay
+          fi
+
+      # ===== Build =====
+      - name: 🔨 Build SlimeVR-Tracker-nRF - ${{ matrix.boards.boardname }}
+        if: ${{ matrix.boards.type == 'tracker' }}
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          rm -rf SlimeVR-Tracker-nRF/build
+          mkdir -p SlimeVR-Tracker-nRF/build
+          west build \
+            --board "${BOARD}" \
+            --pristine=always SlimeVR-Tracker-nRF \
+            --build-dir SlimeVR-Tracker-nRF/build \
+            -- \
+            -DNCS_TOOLCHAIN_VERSION=NONE \
+            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
+          mv "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}" \
+             "Releases/${OUTPUT_NAME}.${FILEFORMAT}"
+
+      # ===== DTS / overlay 收集、diff 與打包 =====
+      - name: Collect DTS (before/after) & Diff, then Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+
+          DTS_MAIN="SlimeVR-Tracker-nRF/boards/xiao_ble.overlay"
+          DTS_SENSE="SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay"
+
+          cp "$DTS_MAIN"  "Releases/dts/xiao_ble.after.overlay" || true
+          cp "$DTS_SENSE" "Releases/dts/xiao_ble_sense.after.overlay" || true
+
+          if [[ -f "Releases/dts/xiao_ble.before.overlay" && -f "Releases/dts/xiao_ble.after.overlay" ]]; then
+            diff -u "Releases/dts/xiao_ble.before.overlay" "Releases/dts/xiao_ble.after.overlay" > "Releases/dts/xiao_ble.pins.diff" || true
+          else
+            echo "WARN: xiao_ble.before.overlay not found, skipping diff"
+          fi
+
+          if [[ -f "SlimeVR-Tracker-nRF/build/zephyr/zephyr.dts" ]]; then
+            cp "SlimeVR-Tracker-nRF/build/zephyr/zephyr.dts" "Releases/dts/zephyr.final.dts"
+          fi
+
+          tar -czf "Releases/${OUTPUT_NAME}_DTS.tgz" -C Releases dts
+          ls -la Releases
+
+      - name: Upload Artifact (UF2)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+
+      - name: Upload Artifact (DTS package)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_NAME }}_DTS.tgz
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
+
+      - name: Create/Update Github Release
+        uses: mini-bomba/create-github-release@v1.2.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: "latest"
+          prerelease: false
+          name: "Latest Firmware"
+          body: |
+            Manual build of the SlimeNRF Tracker Firmware (XIAO BLE).
+
+            Commit: ${{ env.GIT_HASH }}
+            Message:
+            ${{ env.GIT_MESSAGE }}
+
+            Board: ${{ env.BOARD }}
+            Features:
+              MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
+              CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
+              SW0=${{ env.SW0_BUTTON }}
+
+            DTS artifacts:
+              - xiao_ble.before.overlay / xiao_ble.after.overlay
+              - xiao_ble.pins.diff (before vs after)
+              - zephyr.final.dts (if present)
+          files: |
+            zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+            zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
+          clear_attachments: true
