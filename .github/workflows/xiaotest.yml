@@ -1,0 +1,312 @@
+name: Build Promicro Tracker (SPI)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: write-all
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      BOARD_PREFIX: "promicro_uf2/nrf52840/"
+      FILENAME_PREFIX: "SlimeNRF_Tracker_"
+      FILEFORMAT: "uf2"
+
+      # --- ピン設定---
+      MISO: "P0.24"
+      MOSI: "P0.06"
+      SCK:  "P0.08"
+      CS:   "P0.22"
+      PWM0: "P0.15"
+      SW0:  "P1.00"
+      LED:  "P0.15"
+      CLK:  "P0.20"
+      INT:  "P0.17"
+      VCC:  "P0.31"
+
+      # --- 機能スイッチ---
+      MAGNETOMETER: "enabled"
+      SLEEP:        "disabled"
+      SENSOR_CLOCK: "enabled"
+      EXTRA_ACTIONS: "disabled"
+      SW0_BUTTON:   "disabled"
+
+    steps:
+      - name: Acquire code (root)
+        uses: actions/checkout@v5
+
+      - name: Put commit hash/name in env variables
+        run: |
+          echo "GIT_HASH=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+          echo "GIT_MESSAGE<<EOF" >> $GITHUB_ENV
+          git log -1 --pretty=%B >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Clean Landing Site
+        run: sudo rm -rf zephyr-workspace/SlimeNRF-CI
+
+      - name: Acquire code (manifest at zephyr-workspace/SlimeNRF-CI)
+        uses: actions/checkout@v5
+        with:
+          path: zephyr-workspace/SlimeNRF-CI
+
+      - name: Install Dependencies + West
+        run: |
+          sudo apt-get update && sudo apt install --no-install-recommends \
+            git cmake ninja-build gperf ccache dfu-util device-tree-compiler \
+            wget python3-dev python3-pip python3-setuptools python3-tk \
+            python3-wheel python3-venv xz-utils file make gcc gcc-multilib \
+            g++-multilib libsdl2-dev libmagic1
+          python3 -m venv ~/.venv
+          source ~/.venv/bin/activate
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          pip3 install west ninja
+
+      - name: Install Zephyr SDK
+        run: |
+          wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
+          tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
+          ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
+
+      - name: Initialize Zephyr Workspace
+        run: |
+          cd zephyr-workspace
+          rm -rf .west
+          west init -l SlimeNRF-CI
+          west update --narrow -o=--depth=1
+          west zephyr-export
+
+      - name: Install Zephyr Python requirements
+        run: |
+          cd zephyr-workspace
+          source ~/.venv/bin/activate
+          pip3 install -r zephyr/scripts/requirements.txt
+          python -c "import elftools.elf.elffile, yaml; print('Zephyr Python deps OK')"
+
+      - name: Preparing Build Environment
+        run: |
+          cd zephyr-workspace
+          rm -rf Releases
+          mkdir Releases
+
+      - name: Derive names (SPI)
+        run: |
+          echo "BOARD=${BOARD_PREFIX}spi" >> $GITHUB_ENV
+          echo "OUTPUT_NAME=${FILENAME_PREFIX}SPI_ProMicro" >> $GITHUB_ENV
+
+      - name: Force UF2 output (Kconfig)
+        run: |
+          cd zephyr-workspace
+          printf "\nCONFIG_BUILD_OUTPUT_UF2=y" >> SlimeVR-Tracker-nRF/prj.conf
+
+      - name: Sanity check workspace
+        run: |
+          ls -la zephyr-workspace
+          test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
+
+      - name: Snapshot DTS (before change)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+          mkdir -p Releases/dts
+          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+          cp "$DTS" "Releases/dts/promicro_uf2.before.dts"
+
+      - name: Apply pin mapping to DTS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+
+          parse_pin() {
+            local s="$1"
+            local port pin
+            if [[ $s =~ ^P?([01])\.([0-9]{1,2})$ ]]; then
+              port="${BASH_REMATCH[1]}"; pin="${BASH_REMATCH[2]}"
+            elif [[ $s =~ ^([0-9]{1,2})$ ]]; then
+              port="0"; pin="${BASH_REMATCH[1]}"
+            else
+              echo "Invalid pin: $s" >&2; exit 1
+            fi
+            pin=$((10#$pin))
+            echo "$port $pin"
+          }
+
+          read MISO_PORT MISO_PIN < <(parse_pin "${MISO}")
+          read MOSI_PORT MOSI_PIN < <(parse_pin "${MOSI}")
+          read  SCK_PORT  SCK_PIN < <(parse_pin "${SCK}")
+          read   CS_PORT   CS_PIN < <(parse_pin "${CS}")
+          read PWM0_PORT PWM0_PIN < <(parse_pin "${PWM0}")
+          read  SW0_PORT  SW0_PIN < <(parse_pin "${SW0}")
+          read  LED_PORT  LED_PIN < <(parse_pin "${LED}")
+          read  CLK_PORT  CLK_PIN < <(parse_pin "${CLK}")
+          read  INT_PORT  INT_PIN < <(parse_pin "${INT}")
+          read  VCC_PORT  VCC_PIN < <(parse_pin "${VCC}")
+
+          for P in MISO MOSI SCK CS PWM0 SW0 LED CLK INT VCC; do
+            eval port=\$${P}_PORT pin=\$${P}_PIN
+            if [[ $port -eq 1 && $pin -gt 15 ]]; then
+              echo "$P: Port 1 supports only 0..15"; exit 1
+            fi
+          done
+
+          # spi3_default
+          sed -i -E "/^[[:space:]]*spi3_default:[[:space:]]*spi3_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$DTS"
+          sed -i -E "/^[[:space:]]*spi3_default:[[:space:]]*spi3_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
+              psels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>;
+          }" "$DTS"
+
+          # spi3_sleep
+          sed -i -E "/^[[:space:]]*spi3_sleep:[[:space:]]*spi3_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$DTS"
+          sed -i -E "/^[[:space:]]*spi3_sleep:[[:space:]]*spi3_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
+              psels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>;
+          }" "$DTS"
+
+          # &spi3 CS
+          sed -i -E "/^[[:space:]]*&spi3[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#cs-gpios[[:space:]]*=<[^;]+>;#cs-gpios = <\\&gpio${CS_PORT} ${CS_PIN} GPIO_ACTIVE_LOW>;#g" "$DTS"
+
+          # PWM0
+          sed -i -E \
+            -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
+            -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
+            "$DTS"
+
+          # SW0（buttons）
+          sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS"
+
+          # zephyr,user（LED / CLK / INT / VCC）
+          sed -i -E "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ {
+              s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#;
+              s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <\\&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#;
+              s#(clk-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#;
+              s#(int0-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${INT_PORT} ${INT_PIN}#;
+              s#(vcc-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${VCC_PORT} ${VCC_PIN}#;
+            }" "$DTS"
+
+      - name: Enable External Sensor Clock
+        if: env.SENSOR_CLOCK == 'enabled'
+        run: |
+          cd zephyr-workspace
+          sed -i "s|//[[:space:]]*clk-gpios|clk-gpios|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+          printf "\nCONFIG_USE_SENSOR_CLOCK=y" >> SlimeVR-Tracker-nRF/prj.conf
+
+      - name: Disable External Sensor Clock
+        if: env.SENSOR_CLOCK == 'disabled'
+        run: |
+          cd zephyr-workspace
+          sed -i "s|clk-gpios[[:space:]]*=|// clk-gpios =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+          printf "\nCONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
+
+      - name: Enable/Disable feature toggles
+        run: |
+          cd zephyr-workspace
+          { [[ "${EXTRA_ACTIONS}" == "enabled" ]] && echo "CONFIG_USER_EXTRA_ACTIONS=y" || echo "CONFIG_USER_EXTRA_ACTIONS=n"; } >> SlimeVR-Tracker-nRF/prj.conf
+          { [[ "${MAGNETOMETER}"  == "enabled" ]] && echo "CONFIG_SENSOR_USE_MAG=y"     || echo "CONFIG_SENSOR_USE_MAG=n"; }     >> SlimeVR-Tracker-nRF/prj.conf
+          if [[ "${SLEEP}" == "enabled" ]]; then
+            echo "CONFIG_USE_IMU_WAKE_UP=y" >> SlimeVR-Tracker-nRF/prj.conf
+            echo "CONFIG_USE_ACTIVE_TIMEOUT=y" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            echo "CONFIG_USE_IMU_WAKE_UP=n" >> SlimeVR-Tracker-nRF/prj.conf
+            echo "CONFIG_USE_ACTIVE_TIMEOUT=n" >> SlimeVR-Tracker-nRF/prj.conf
+            echo "CONFIG_SENSOR_LP_TIMEOUT=300000" >> SlimeVR-Tracker-nRF/prj.conf
+            echo "CONFIG_SENSOR_USE_LOW_POWER_2=n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+          if [[ "${SW0_BUTTON}" == "enabled" ]]; then
+            sed -i "s|//[[:space:]]*sw0[[:space:]]*=|sw0 =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+          else
+            sed -i "s|sw0[[:space:]]*=|// sw0 =|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+          fi
+
+      - name: Build SlimeVR-Tracker-nRF
+        run: |
+          cd zephyr-workspace
+          rm -rf SlimeVR-Tracker-nRF/build
+          mkdir -p SlimeVR-Tracker-nRF/build
+          west build \
+            --board "$BOARD" \
+            --pristine=always SlimeVR-Tracker-nRF \
+            --build-dir SlimeVR-Tracker-nRF/build \
+            -- \
+            -DNCS_TOOLCHAIN_VERSION=NONE \
+            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
+
+          SRC1="SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}"
+          SRC2="SlimeVR-Tracker-nRF/build/zephyr/zephyr.${FILEFORMAT}"
+          if   [ -f "$SRC1" ]; then SRC="$SRC1";
+          elif [ -f "$SRC2" ]; then SRC="$SRC2";
+          else
+            SRC=$(find SlimeVR-Tracker-nRF/build -type f -name "*.uf2" | head -n1)
+          fi
+          test -n "$SRC" -a -f "$SRC" || {
+            echo "UF2 not found; listing possible outputs under build:"
+            find SlimeVR-Tracker-nRF/build -maxdepth 6 -type f -name "zephyr.*" -printf "  %p\n"
+            exit 1
+          }
+          mv "$SRC" "Releases/$OUTPUT_NAME.${FILEFORMAT}"
+
+      # ===== 新增：收集 DTS 與 Diff，並打包上傳 =====
+      - name: Collect DTS & Diff, then Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+          mkdir -p Releases/dts
+          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+
+          cp "$DTS" "Releases/dts/promicro_uf2.after.dts"
+
+          if [[ -f "Releases/dts/promicro_uf2.before.dts" ]]; then
+            diff -u "Releases/dts/promicro_uf2.before.dts" "Releases/dts/promicro_uf2.after.dts" > "Releases/dts/promicro_uf2.pins.diff" || true
+          else
+            echo "WARN: promicro_uf2.before.dts not found, skipping diff"
+          fi
+
+          tar -czf "Releases/${OUTPUT_NAME}_DTS.tgz" -C Releases dts
+          ls -la Releases
+
+      - name: Upload Artifact (UF2)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+
+      - name: Upload Artifact (DTS package)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_NAME }}_DTS.tgz
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
+
+      - name: Create/Update Github Release
+        uses: mini-bomba/create-github-release@v1.2.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: "latest"
+          prerelease: false
+          name: "Latest Firmware"
+          body: |
+            Manual build of the SlimeNRF Tracker Firmware.
+            Board: ${{ env.BOARD }}
+            Features:
+              MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
+              CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
+              SW0=${{ env.SW0_BUTTON }}
+            Pins (SPI):
+              MISO=${{ env.MISO }}, MOSI=${{ env.MOSI }}, SCK=${{ env.SCK }}, CS=${{ env.CS }}
+              PWM0=${{ env.PWM0 }}, SW0=${{ env.SW0 }}
+              LED=${{ env.LED }}, CLK=${{ env.CLK }}
+              INT=${{ env.INT }}, VCC=${{ env.VCC }}
+            DTS artifacts:
+              - promicro_uf2.before.dts / promicro_uf2.after.dts
+              - promicro_uf2.pins.diff (before vs after)
+          files: |
+            zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+            zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
+          clear_attachments: true
