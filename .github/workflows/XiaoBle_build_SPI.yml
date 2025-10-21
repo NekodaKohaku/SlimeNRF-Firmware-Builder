@@ -123,7 +123,7 @@ jobs:
           cd zephyr-workspace
           cp "SlimeVR-Tracker-nRF/boards/xiao_ble.overlay" "Releases/dts/xiao_ble.before.overlay" || true
 
-      - name: ✍️ Apply SPI & GPIO pin mapping
+      - name: ✍️ Apply SPI & GPIO pin mapping (no cleanup)
         if: ${{ matrix.boards.type == 'tracker' }}
         shell: bash
         run: |
@@ -157,74 +157,44 @@ jobs:
           VCC  = parse_pin(E["VCC"])
           SW0  = parse_pin(E["SW0"])
 
-          # === 1) 在 &pinctrl 底下建立自訂的 spi3 狀態 ===
-          PIN_BEGIN = "/* === AUTOGEN: pinctrl spi3 begin === */"
-          PIN_END   = "/* === AUTOGEN: pinctrl spi3 end === */"
-          pin_block = f"""
-          &pinctrl {{
-            {PIN_BEGIN}
-            spi3_user_default: spi3_user_default {{
-              group1 {{
-                psels = <NRF_PSEL(SPIM_SCK,  {SCK[0]},  {SCK[1]})>,
-                        <NRF_PSEL(SPIM_MOSI, {MOSI[0]}, {MOSI[1]})>,
-                        <NRF_PSEL(SPIM_MISO, {MISO[0]}, {MISO[1]})>;
-              }};
+          # === 只附加：覆寫既有 pinctrl 狀態 &spi2_default / &spi2_sleep ===
+          block = f"""
+          /* === AUTOGEN: override spi2 pinmap begin === */
+          &spi2_default {{
+            group1 {{
+              /* SCK/MOSI/MISO */
+              psels = <NRF_PSEL(SPIM_SCK,  {SCK[0]},  {SCK[1]})>,
+                      <NRF_PSEL(SPIM_MOSI, {MOSI[0]}, {MOSI[1]})>,
+                      <NRF_PSEL(SPIM_MISO, {MISO[0]}, {MISO[1]})>;
             }};
-            spi3_user_sleep: spi3_user_sleep {{
-              group1 {{
-                psels = <NRF_PSEL(SPIM_SCK,  {SCK[0]},  {SCK[1]})>,
-                        <NRF_PSEL(SPIM_MOSI, {MOSI[0]}, {MOSI[1]})>,
-                        <NRF_PSEL(SPIM_MISO, {MISO[0]}, {MISO[1]})>;
-                low-power-enable;
-              }};
-            }};
-            {PIN_END}
           }};
+          &spi2_sleep {{
+            group1 {{
+              psels = <NRF_PSEL(SPIM_SCK,  {SCK[0]},  {SCK[1]})>,
+                      <NRF_PSEL(SPIM_MOSI, {MOSI[0]}, {MOSI[1]})>,
+                      <NRF_PSEL(SPIM_MISO, {MISO[0]}, {MISO[1]})>;
+              low-power-enable;
+            }};
+          }};
+          /* === AUTOGEN: override spi2 pinmap end === */
           """
 
-          # 先移除舊的自動區塊
-          s = re.sub(rf"&pinctrl\s*\{{[^}}]*?{re.escape(PIN_BEGIN)}.*?{re.escape(PIN_END)}.*?\}};",
-                     lambda m: "", s, flags=re.S)
+          # 直接附加到檔尾（不清除任何舊內容）
+          if not s.endswith("\n"): s += "\n"
+          s += block + "\n"
 
-          # 若檔案已經有 &pinctrl 區塊，就把 AUTOGEN 塞進去；否則直接在檔尾附上 pin_block
-          if "&pinctrl" in s:
-            # 在現有 &pinctrl 區塊結束前插入 AUTOGEN（保守做法：在檔尾加一次完整 pin_block 也可以）
-            s += "\n" + pin_block + "\n"
-          else:
-            s += "\n" + pin_block + "\n"
+          # ── 其餘維持原本行為：CS、PWM0、zephyr,user、CLK、button_0 ──
 
-          # === 2) 讓 &spi3 指向新的 pinctrl 狀態 + 設定 CS ===
-          def patch_spi3_block(src: str) -> str:
-            # 先把 pinctrl-0/1 換成我們的 label
-            src = re.sub(r'(^\s*pinctrl-0\s*=\s*<[^;]+>;\s*)', 'pinctrl-0 = <&spi3_user_default>;\n', src, flags=re.M)
-            src = re.sub(r'(^\s*pinctrl-1\s*=\s*<[^;]+>;\s*)', 'pinctrl-1 = <&spi3_user_sleep>;\n', src, flags=re.M)
-            # 若缺少上述屬性，插到 &spi3 { 開頭後面
-            def insert_if_missing(prop, ins):
-              nonlocal src
-              if not re.search(rf'^\s*{prop}\s*=', src, flags=re.M):
-                src = re.sub(r'(&spi3\s*\{)', r'\1\n\t\t' + ins, src)
-            insert_if_missing('pinctrl-0', 'pinctrl-0 = <&spi3_user_default>;')
-            insert_if_missing('pinctrl-1', 'pinctrl-1 = <&spi3_user_sleep>;')
-            # 確保 pinctrl-names 至少有 default/sleep（通常原檔已有）
-            if not re.search(r'^\s*pinctrl-names\s*=\s*".*default.*".*".*sleep.*"', src, flags=re.M):
-              src = re.sub(r'(&spi3\s*\{)', r'\1\n\t\tpinctrl-names = "default", "sleep";', src)
-            # 替換 cs-gpios -> &gpioX PORT PIN GPIO_ACTIVE_LOW
-            src = re.sub(r'(^\s*cs-gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+0x[0-9a-fA-F]+(\s*>;\s*)',
-                         lambda m: f"{m.group(1)}{CS[0]} {CS[1]} GPIO_ACTIVE_LOW{m.group(2)}",
-                         src, flags=re.M)
-            return src
+          # 1) CS：把 &spi3 的 cs-gpios 換成環境變數指定的腳位
+          s = re.sub(r'(^\s*cs-gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+\w+(\s*>;\s*)',
+                     lambda m: f"{m.group(1)}{CS[0]} {CS[1]} GPIO_ACTIVE_LOW{m.group(2)}",
+                     s, flags=re.M)
 
-          # 只對 &spi3 節點內容做替換
-          s = re.sub(r'(&spi3\s*\{)(.*?)(\n\};)',
-                     lambda m: m.group(1) + patch_spi3_block(m.group(2)) + m.group(3),
-                     s, flags=re.S)
-
-          # === 3) 其他 GPIO 細項（PWM0、zephyr,user、button_0、CLK） ===
-          # PWM0: 把 NRF_PSEL(PWM_OUT0, x, y) 改到新腳位
+          # 2) PWM0：重寫 PWM_OUT0 的 PSEL
           s = re.sub(r'(NRF_PSEL\s*\(\s*PWM_OUT0\s*,\s*)[01]\s*,\s*\d+(\s*\))',
                      lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}", s)
 
-          # zephyr,user block 內的屬性：led/int0/vcc
+          # 3) zephyr,user：led/int0/vcc 三個屬性
           def ensure_prop(src, prop, port, pin, flags_text):
             if re.search(rf"\b{prop}\s*=", src):
               rx = re.compile(rf"({prop}\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)")
@@ -238,19 +208,20 @@ jobs:
           s = ensure_prop(s, "int0-gpios", INT0[0], INT0[1], " 0")
           s = ensure_prop(s, "vcc-gpios",  VCC[0], VCC[1],  " 0")
 
-          # clk-gpios（覆蓋註解/非註解兩種版本的腳位，不動 flags）
+          # 4) CLK：無論註解 / 未註解都改腳位（不改 flags）
           s = re.sub(r'(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
                      lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}", s, flags=re.M)
           s = re.sub(r'(^\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
                      lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}", s, flags=re.M)
 
-          # button_0 的 gpios（保留 0x11，上拉+active-low）
-          s = re.sub(r'(button_0\s*\{[^{}]*?gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+0x[0-9a-fA-F]+(\s*>;)',
+          # 5) Button_0：保留 0x11（上拉 + active-low）
+          s = re.sub(r'(button_0\s*\{[^{}]*?gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+0x[0-9A-Fa-f]+(\s*>;)',
                      lambda m: f"{m.group(1)}{SW0[0]} {SW0[1]} 0x11{m.group(2)}", s, flags=re.S)
 
           p.write_text(s)
-          print("Overlay pins updated via &pinctrl + &spi3 rewire.")
+          print("Overlay pins appended (no cleanup).")
           PY
+
 
       # === 五項機能スイッチ（讀 env） ===
       - name: 🔧 External Sensor Clock
