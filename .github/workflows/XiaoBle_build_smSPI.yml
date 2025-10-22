@@ -18,7 +18,7 @@ jobs:
           - boardname: "xiao_ble/nrf52840"
             type: "tracker"
             fileformat: "uf2"
-            filename: "XiaoBle_SlimeNRF_Tracker_smSPI"
+            filename: "XiaoBle_SlimeNRF_Tracker"
 
     runs-on: ubuntu-latest
 
