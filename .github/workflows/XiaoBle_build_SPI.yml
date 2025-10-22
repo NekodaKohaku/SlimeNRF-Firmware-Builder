@@ -211,6 +211,7 @@ jobs:
                      lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}", s, flags=re.M)
           s = re.sub(r'(button_0\s*\{[^{}]*?gpios\s*=\s*)<[^>]*>(\s*;)',
                      lambda m: f'{m.group(1)}<&gpio{SW0[0]} {SW0[1]} 0x11>{m.group(2)}', s, flags=re.S)
+          s += "/delete-node/ &i2c1;\n"
           p.write_text(s)
           PY
 
