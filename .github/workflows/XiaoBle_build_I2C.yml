@@ -1,0 +1,387 @@
+name: Build XiaoBle Tracker (I2C)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: write-all
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        boards:
+          - boardname: "xiao_ble/nrf52840"
+            type: "tracker"
+            fileformat: "uf2"
+            filename: "XiaoBle_SlimeNRF_Tracker"
+
+    runs-on: ubuntu-latest
+
+    # ✅ ここで「ピン配列」と「機能スイッチ」を変更する
+    env:
+      # --- ピン設定（I2C 用）---
+      SCL:  "P0.28"
+      SDA:  "P0.03"
+
+      # --- 汎用 GPIO ---
+      PWM0: "P0.15"
+      SW0:  "P0.02"
+      LED:  "P0.17"
+      CLK:  "P0.28"
+      INT:  "P0.03"
+      VCC:  "P0.14"
+
+      # --- 機能スイッチ ---
+      MAGNETOMETER: "enabled"
+      SLEEP:        "disabled"
+      SENSOR_CLOCK: "enabled"
+      EXTRA_ACTIONS: "enabled"
+      SW0_BUTTON:   "enabled"
+
+    steps:
+      - name: 💻 リポジトリ取得（root）
+        uses: actions/checkout@v5
+
+      - name: 📝 コミット情報を環境変数へ
+        shell: bash
+        run: |
+          echo "GIT_HASH=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+          {
+            echo "GIT_MESSAGE<<EOF"
+            git log -1 --pretty=%B
+            echo "EOF"
+          } >> $GITHUB_ENV
+
+      - name: 🧹 ワークスペース置き場をクリーン
+        shell: bash
+        run: |
+          rm -rf zephyr-workspace/SlimeNRF-CI
+
+      - name: 💻 リポジトリ取得（workspace）
+        uses: actions/checkout@v5
+        with:
+          path: zephyr-workspace/SlimeNRF-CI
+
+      - name: 🧰 依存関係 + Python venv + West
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git cmake ninja-build gperf ccache dfu-util device-tree-compiler wget \
+            python3-dev python3-pip python3-setuptools python3-tk python3-wheel python3-venv \
+            xz-utils file make gcc gcc-multilib g++-multilib libsdl2-dev libmagic1
+          python3 -m venv "$HOME/.venv"
+          "$HOME/.venv/bin/python" -m pip install --upgrade pip
+          "$HOME/.venv/bin/python" -m pip install west ninja
+          echo "$HOME/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: 🪁 Zephyr SDK をインストール
+        shell: bash
+        run: |
+          wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
+          tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C "$HOME"/
+          "$HOME/zephyr-sdk-0.17.2/setup.sh" -c -t arm-zephyr-eabi
+
+      - name: ♻️ Zephyr ワークスペース初期化
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          rm -rf .west
+          west init -l SlimeNRF-CI
+          west update --narrow -o=--depth=1
+          west zephyr-export
+
+      - name: 🐍 Python 依存関係
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          python -m pip install -r zephyr/scripts/requirements.txt
+
+      - name: 🔧 ビルド用変数を設定
+        shell: bash
+        run: |
+          echo "FILEFORMAT=${{ matrix.boards.fileformat }}" >> $GITHUB_ENV
+          echo "BOARD=${{ matrix.boards.boardname }}" >> $GITHUB_ENV
+          echo "OUTPUT_NAME=${{ matrix.boards.filename }}" >> $GITHUB_ENV
+
+      - name: 🗂️ リリース出力先を準備
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          rm -rf Releases
+          mkdir -p Releases/dts
+
+      - name: 📸 変更前の DTS を保存
+        if: ${{ matrix.boards.type == 'tracker' }}
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          cp "SlimeVR-Tracker-nRF/boards/xiao_ble.overlay" "Releases/dts/xiao_ble.before.overlay" || true
+
+      # === I2C 用の pinctrl と GPIO を環境変数から反映（&i2c1 使用、&spi3 は削除） ===
+      - name: ✍️ I2C ピン割当と GPIO を反映（&i2c1_* を上書き／&spi3 を削除）＋結果を出力
+        if: ${{ matrix.boards.type == 'tracker' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+          python - <<'PY'
+          import os, re, pathlib, sys
+
+          # --- ファイル読み込み ---
+          p = pathlib.Path("SlimeVR-Tracker-nRF/boards/xiao_ble.overlay")
+          s = p.read_text()
+
+          # --- 文字列 "P0.28" → (0,28) へ変換 ---
+          def parse_pin(v: str):
+            v = v.strip().upper().replace('P','')
+            port, pin = (v.split('.',1) if '.' in v else ('0', v))
+            port, pin = int(port), int(pin)
+            if port not in (0,1): sys.exit(f"不正なポート P{port}")
+            if port == 1 and not (0 <= pin <= 15): sys.exit("Port 1 は 0..15 のみ対応")
+            if not (0 <= pin <= 31): sys.exit("ピン番号は 0..31")
+            return port, pin
+
+          E = os.environ
+          SCL  = parse_pin(E["SCL"])
+          SDA  = parse_pin(E["SDA"])
+          PWM0 = parse_pin(E["PWM0"])
+          LED  = parse_pin(E["LED"])
+          INT0 = parse_pin(E["INT"])
+          CLK  = parse_pin(E["CLK"])
+          VCC  = parse_pin(E["VCC"])
+          SW0  = parse_pin(E["SW0"])
+
+          # --- 1) &i2c1_default / &i2c1_sleep に TWIM の psels を上書き ---
+          i2c_block = f"""
+          &i2c1_default {{
+            group1 {{
+              /* SCL/SDA を設定（内部プル無効） */
+              psels = <NRF_PSEL(TWIM_SCL, {SCL[0]}, {SCL[1]})>,
+                      <NRF_PSEL(TWIM_SDA, {SDA[0]}, {SDA[1]})>;
+              bias-disable;
+            }};
+          }};
+          &i2c1_sleep {{
+            group1 {{
+              psels = <NRF_PSEL(TWIM_SCL, {SCL[0]}, {SCL[1]})>,
+                      <NRF_PSEL(TWIM_SDA, {SDA[0]}, {SDA[1]})>;
+            }};
+          }};
+          """
+          if not s.endswith("\\n"): s += "\\n"
+          s += i2c_block + "\\n"
+
+          # --- 2) SPI3 は I2C ビルドでは不要：ノード本文を除去し、delete-node 指示を追記 ---
+          s = re.sub(r'&spi3\\s*\\{.*?\\n\\};', '/* spi3: I2C ビルドのため削除 */\\n', s, flags=re.S)
+          if "/delete-node/ &spi3;" not in s:
+            s += "\\n/delete-node/ &spi3;\\n"
+
+          # --- 3) PWM0 のピンを上書き ---
+          s = re.sub(
+            r'(NRF_PSEL\\s*\\(\\s*PWM_OUT0\\s*,\\s*)[01]\\s*,\\s*\\d+(\\s*\\))',
+            lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}",
+            s
+          )
+
+          # --- 4) zephyr,user の GPIO（led/int0/vcc/clk）を上書き ---
+          def set_prop(src, prop, port, pin, flags_text):
+            rx = re.compile(rf'({prop}\\s*=\\s*)<[^>]*>(\\s*;\\s*)')
+            if rx.search(src):
+              return rx.sub(lambda m: f"{m.group(1)}<&gpio{port} {pin}{flags_text}>{m.group(2)}", src)
+            uz = re.compile(r"(zephyr,user\\s*\\{)(.*?)(\\n\\t*\\};)", re.S)
+            return uz.sub(lambda m: f"{m.group(1)}{m.group(2)}\\n\\t\\t{prop} = <&gpio{port} {pin}{flags_text}>;{m.group(3)}", src)
+
+          s = set_prop(s, "led-gpios",  LED[0],  LED[1],  " (GPIO_OPEN_DRAIN|GPIO_ACTIVE_LOW)")
+          s = set_prop(s, "int0-gpios", INT0[0], INT0[1], " 0")
+          s = set_prop(s, "vcc-gpios",  VCC[0],  VCC[1],  " 0")
+
+          # clk-gpios はフラグを保持したままポート/ピンのみ更新（コメント/非コメント両対応）
+          s = re.sub(
+            r'(^\\s*//\\s*clk-gpios\\s*=\\s*<\\s*&gpio)[01]\\s+\\d+([^>]*>;\\s*)',
+            lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}",
+            s, flags=re.M
+          )
+          s = re.sub(
+            r'(^\\s*clk-gpios\\s*=\\s*<\\s*&gpio)[01]\\s+\\d+([^>]*>;\\s*)',
+            lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}",
+            s, flags=re.M
+          )
+
+          # --- 5) button_0 の gpios を上書き（0x11 = PULL_UP | ACTIVE_LOW）---
+          s = re.sub(
+            r'(button_0\\s*\\{[^{}]*?gpios\\s*=\\s*)<[^>]*>(\\s*;)',
+            lambda m: f'{m.group(1)}<&gpio{SW0[0]} {SW0[1]} 0x11>{m.group(2)}',
+            s, flags=re.S
+          )
+
+          # --- 書き戻し ---
+          p.write_text(s)
+
+          # --- ここから結果の簡易出力（確認用） ---
+          def numbered(text: str):
+            return "\\n".join(f"{i+1:04d}: {line}" for i, line in enumerate(text.splitlines()))
+
+          print("=== Pin Summary ===")
+          print(f"SCL=P{SCL[0]}.{SCL[1]}  SDA=P{SDA[0]}.{SDA[1]}")
+          print(f"PWM0=P{PWM0[0]}.{PWM0[1]}  LED=P{LED[0]}.{LED[1]}")
+          print(f"INT=P{INT0[0]}.{INT0[1]}  CLK=P{CLK[0]}.{CLK[1]}  VCC=P{VCC[0]}.{VCC[1]}  SW0=P{SW0[0]}.{SW0[1]}")
+
+          m = re.search(r'(&i2c1\\s*\\{.*?\\n\\};)', s, flags=re.S)
+          print("=== &i2c1 block (after) ===")
+          print(m.group(1) if m else "(not found)")
+
+          print("=== &i2c1_default / &i2c1_sleep (override) ===")
+          print(i2c_block.strip())
+
+          print("=== FULL xiao_ble.overlay (after) with line numbers ===")
+          print(numbered(s))
+          PY
+
+      # === 機能スイッチ（環境変数） ===
+      - name: 🔧 外部センサ用クロックの有効/無効
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${SENSOR_CLOCK}" == "enabled" ]]; then
+            sed -i "s#^[[:space:]]*//[[:space:]]*clk-gpios#\t\tclk-gpios#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+            printf "\nCONFIG_USE_SENSOR_CLOCK=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            sed -i "s#^\([[:space:]]*\)clk-gpios[[:space:]]*=#\1// clk-gpios =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+            printf "\nCONFIG_USE_SENSOR_CLOCK=n\n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+
+      - name: 🔧 追加アクション
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${EXTRA_ACTIONS}" == "enabled" ]]; then
+            printf "\nCONFIG_USER_EXTRA_ACTIONS=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            printf "\nCONFIG_USER_EXTRA_ACTIONS=n\n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+
+      - name: 🔧 磁気センサ（MAG）
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${MAGNETOMETER}" == "enabled" ]]; then
+            printf "\nCONFIG_SENSOR_USE_MAG=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            printf "\nCONFIG_SENSOR_USE_MAG=n\n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+
+      - name: 🔧 スリープ機能
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${SLEEP}" == "enabled" ]]; then
+            printf "\nCONFIG_USE_IMU_WAKE_UP=y\nCONFIG_USE_ACTIVE_TIMEOUT=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            {
+              printf "\nCONFIG_USE_IMU_WAKE_UP=n\n"
+              printf "CONFIG_USE_ACTIVE_TIMEOUT=n\n"
+              printf "CONFIG_SENSOR_LP_TIMEOUT=300000\n"
+              printf "CONFIG_SENSOR_USE_LOW_POWER_2=n\n"
+            } >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+
+      - name: 🔧 SW0 ボタン（aliases の sw0 をコメント切替）
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${SW0_BUTTON}" == "enabled" ]]; then
+            sed -i "s#^[[:space:]]*//[[:space:]]*sw0[[:space:]]*=#\t\tsw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay || true
+          else
+            sed -i "s#^\([[:space:]]*\)sw0[[:space:]]*=#\1// sw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay || true
+          fi
+
+      # ===== ビルド =====
+      - name: 🔨 ビルド実行 - ${{ matrix.boards.boardname }}
+        if: ${{ matrix.boards.type == 'tracker' }}
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          rm -rf SlimeVR-Tracker-nRF/build
+          mkdir -p SlimeVR-Tracker-nRF/build
+          west build \
+            --board "${BOARD}" \
+            --pristine=always SlimeVR-Tracker-nRF \
+            --build-dir SlimeVR-Tracker-nRF/build \
+            -- \
+            -DNCS_TOOLCHAIN_VERSION=NONE \
+            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
+          mv "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-NRF/zephyr/zephyr.${FILEFORMAT}" \
+             "Releases/${OUTPUT_NAME}.${FILEFORMAT}" || mv "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}" \
+             "Releases/${OUTPUT_NAME}.${FILEFORMAT}"
+
+      # ===== DTS の収集とパッケージング =====
+      - name: DTS を収集（before/after/diff）して圧縮
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+
+          DTS_MAIN="SlimeVR-Tracker-nRF/boards/xiao_ble.overlay"
+
+          cp "$DTS_MAIN"  "Releases/dts/xiao_ble.after.overlay" || true
+
+          if [[ -f "Releases/dts/xiao_ble.before.overlay" && -f "Releases/dts/xiao_ble.after.overlay" ]]; then
+            diff -u "Releases/dts/xiao_ble.before.overlay" "Releases/dts/xiao_ble.after.overlay" > "Releases/dts/xiao_ble.pins.diff" || true
+          else
+            echo "WARN: xiao_ble.before.overlay not found, skipping diff"
+          fi
+
+          if [[ -f "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.dts" ]]; then
+            cp "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.dts" "Releases/dts/zephyr.final.dts"
+          fi
+
+          tar -czf "Releases/${OUTPUT_NAME}_DTS.tgz" -C Releases dts
+          ls -la Releases
+
+      - name: アーティファクトをアップロード（UF2）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+
+      - name: アーティファクトをアップロード（DTS パッケージ）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_NAME }}_DTS.tgz
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
+
+      - name: GitHub リリースの作成/更新
+        uses: mini-bomba/create-github-release@v1.2.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: "latest"
+          prerelease: false
+          name: "Latest Firmware"
+          body: |
+            Manual build of the SlimeNRF Tracker Firmware (XIAO BLE I2C).
+            Board: ${{ env.BOARD }}
+
+            Features:
+              MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
+              CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
+              SW0=${{ env.SW0_BUTTON }}
+
+            Pins:
+              SCL=${{ env.SCL }}, SDA=${{ env.SDA }}
+              PWM0=${{ env.PWM0 }}, LED=${{ env.LED }}, INT=${{ env.INT }}, CLK=${{ env.CLK }}, VCC=${{ env.VCC }}, SW0=${{ env.SW0 }}
+
+            DTS artifacts:
+              - xiao_ble.before.overlay
+              - xiao_ble.after.overlay
+              - xiao_ble.pins.diff (before vs after)
+              - zephyr.final.dts
+          files: |
+            zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+            zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
+          clear_attachments: true
