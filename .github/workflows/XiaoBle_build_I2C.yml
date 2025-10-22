@@ -44,10 +44,10 @@ jobs:
       SW0_BUTTON:   "enabled"
 
     steps:
-      - name: 💻 リポジトリ取得（root）
+      - name: 💻 Acquire code (root)
         uses: actions/checkout@v5
 
-      - name: 📝 コミット情報を環境変数へ
+      - name: 📝 Put commit hash/name in env variables
         shell: bash
         run: |
           echo "GIT_HASH=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
@@ -57,17 +57,17 @@ jobs:
             echo "EOF"
           } >> $GITHUB_ENV
 
-      - name: 🧹 ワークスペース置き場をクリーン
+      - name: 🧹 Clean landing folder for workspace repo
         shell: bash
         run: |
           rm -rf zephyr-workspace/SlimeNRF-CI
 
-      - name: 💻 リポジトリ取得（workspace）
+      - name: 💻 Acquire code (workspace)
         uses: actions/checkout@v5
         with:
           path: zephyr-workspace/SlimeNRF-CI
 
-      - name: 🧰 依存関係 + Python venv + West
+      - name: 🧰 Install Dependencies + Python venv + West
         shell: bash
         run: |
           sudo apt-get update
@@ -80,14 +80,14 @@ jobs:
           "$HOME/.venv/bin/python" -m pip install west ninja
           echo "$HOME/.venv/bin" >> "$GITHUB_PATH"
 
-      - name: 🪁 Zephyr SDK をインストール
+      - name: 🪁 Install Zephyr SDK
         shell: bash
         run: |
           wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
           tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C "$HOME"/
           "$HOME/zephyr-sdk-0.17.2/setup.sh" -c -t arm-zephyr-eabi
 
-      - name: ♻️ Zephyr ワークスペース初期化
+      - name: ♻️ Initialize Zephyr Workspace
         shell: bash
         run: |
           cd zephyr-workspace
@@ -96,34 +96,34 @@ jobs:
           west update --narrow -o=--depth=1
           west zephyr-export
 
-      - name: 🐍 Python 依存関係
+      - name: 🐍 Install Python Dependencies
         shell: bash
         run: |
           cd zephyr-workspace
           python -m pip install -r zephyr/scripts/requirements.txt
 
-      - name: 🔧 ビルド用変数を設定
+      - name: 🔧 Derive build variables (env)
         shell: bash
         run: |
           echo "FILEFORMAT=${{ matrix.boards.fileformat }}" >> $GITHUB_ENV
           echo "BOARD=${{ matrix.boards.boardname }}" >> $GITHUB_ENV
           echo "OUTPUT_NAME=${{ matrix.boards.filename }}" >> $GITHUB_ENV
 
-      - name: 🗂️ リリース出力先を準備
+      - name: 🗂️ Prepare Releases folder
         shell: bash
         run: |
           cd zephyr-workspace
           rm -rf Releases
           mkdir -p Releases/dts
 
-      - name: 📸 変更前の DTS を保存
+      - name: 📸 Snapshot DTS BEFORE modifications
         if: ${{ matrix.boards.type == 'tracker' }}
         shell: bash
         run: |
           cd zephyr-workspace
           cp "SlimeVR-Tracker-nRF/boards/xiao_ble.overlay" "Releases/dts/xiao_ble.before.overlay" || true
 
-      - name: ✍️ I2C ピン割当と GPIO を反映（&i2c1_* を上書き／&spi3 を削除）＋結果を出力
+      - name: ✍️ Apply SPI & GPIO pin mapping (override spi2_* states)
         if: ${{ matrix.boards.type == 'tracker' }}
         shell: bash
         run: |
@@ -176,7 +176,6 @@ jobs:
           VCC  = parse_pin(E["VCC"])
           SW0  = parse_pin(E["SW0"])
 
-          # --- 1) &i2c1_default / &i2c1_sleep を上書き追加 ---
           i2c_block = f"""
           &i2c1_default {{
             group1 {{
@@ -196,21 +195,18 @@ jobs:
           if not s.endswith("\n"): s += "\n"
           s += i2c_block + "\n"
 
-          # --- 2) &spi3 ノードを完全削除（brace バランスで安全に） ---
           span = node_span(s, "spi3")
           if span:
             s = s[:span[0]] + "/* spi3: I2C ビルドのため削除 */\n" + s[span[1]:]
           if "/delete-node/ &spi3;" not in s:
             s += "\n/delete-node/ &spi3;\n"
 
-          # --- 3) PWM0 を上書き ---
           s = re.sub(
             r'(NRF_PSEL\\s*\\(\\s*PWM_OUT0\\s*,\\s*)[01]\\s*,\\s*\\d+(\\s*\\))',
             lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}",
             s
           )
 
-          # --- 4) zephyr,user の GPIO（led/int0/vcc/clk）を上書き ---
           def set_prop(src, prop, port, pin, flags_text):
             rx = re.compile(rf'({prop}\\s*=\\s*)<[^>]*>(\\s*;\\s*)')
             if rx.search(src):
@@ -236,14 +232,12 @@ jobs:
             s, flags=re.M
           )
 
-          # --- 5) button_0 の gpios（0x11 = PULL_UP | ACTIVE_LOW）---
           s = re.sub(
             r'(button_0\\s*\\{[^{}]*?gpios\\s*=\\s*)<[^>]*>(\\s*;)',
             lambda m: f'{m.group(1)}<&gpio{SW0[0]} {SW0[1]} 0x11>{m.group(2)}',
             s, flags=re.S
           )
 
-          # --- 6) 仕上げの正規化（重複フラグや 0 0 の除去）---
           s = re.sub(
             r'\\(GPIO_OPEN_DRAIN\\|GPIO_ACTIVE_LOW\\)\\s+\\(GPIO_OPEN_DRAIN\\|GPIO_ACTIVE_LOW\\)',
             r'(GPIO_OPEN_DRAIN|GPIO_ACTIVE_LOW)', s
@@ -253,34 +247,10 @@ jobs:
             r'\\1 0\\2', s
           )
 
-          # --- 書き戻し ---
           p.write_text(s)
-
-          # ====== 出力（確認用） ======
-          def numbered(text: str):
-            return "\\n".join(f"{i+1:04d}: {line}" for i, line in enumerate(text.splitlines()))
-
-          def node_text(text: str, label: str):
-            sp = node_span(text, label)
-            return text[sp[0]:sp[1]] if sp else "(not found)"
-
-          print("=== Pin Summary ===")
-          print(f"SCL=P{SCL[0]}.{SCL[1]}  SDA=P{SDA[0]}.{SDA[1]}")
-          print(f"PWM0=P{PWM0[0]}.{PWM0[1]}  LED=P{LED[0]}.{LED[1]}")
-          print(f"INT=P{INT0[0]}.{INT0[1]}  CLK=P{CLK[0]}.{CLK[1]}  VCC=P{VCC[0]}.{VCC[1]}  SW0=P{SW0[0]}.{SW0[1]}")
-
-          print("=== &i2c1 block (after) ===")
-          print(node_text(s, "i2c1"))
-
-          print("=== &i2c1_default / &i2c1_sleep (override) ===")
-          print(i2c_block.strip())
-
-          print("=== FULL xiao_ble.overlay (after) with line numbers ===")
-          print(numbered(s))
           PY
 
-      # === 機能スイッチ（環境変数） ===
-      - name: 🔧 外部センサ用クロックの有効/無効
+      - name: 🔧 External Sensor Clock
         shell: bash
         run: |
           cd zephyr-workspace
@@ -292,7 +262,7 @@ jobs:
             printf "\nCONFIG_USE_SENSOR_CLOCK=n\n" >> SlimeVR-Tracker-nRF/prj.conf
           fi
 
-      - name: 🔧 追加アクション
+      - name: 🔧 Extra Actions
         shell: bash
         run: |
           cd zephyr-workspace
@@ -302,7 +272,7 @@ jobs:
             printf "\nCONFIG_USER_EXTRA_ACTIONS=n\n" >> SlimeVR-Tracker-nRF/prj.conf
           fi
 
-      - name: 🔧 磁気センサ（MAG）
+      - name: 🔧 Magnetometer
         shell: bash
         run: |
           cd zephyr-workspace
@@ -312,7 +282,7 @@ jobs:
             printf "\nCONFIG_SENSOR_USE_MAG=n\n" >> SlimeVR-Tracker-nRF/prj.conf
           fi
 
-      - name: 🔧 スリープ機能
+      - name: 🔧 Sleep
         shell: bash
         run: |
           cd zephyr-workspace
@@ -327,7 +297,7 @@ jobs:
             } >> SlimeVR-Tracker-nRF/prj.conf
           fi
 
-      - name: 🔧 SW0 ボタン（aliases の sw0 をコメント切替）
+      - name: 🔧 SW0 Button (comment/uncomment helper)
         shell: bash
         run: |
           cd zephyr-workspace
@@ -337,8 +307,7 @@ jobs:
             sed -i "s#^\([[:space:]]*\)sw0[[:space:]]*=#\1// sw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay || true
           fi
 
-      # ===== ビルド =====
-      - name: 🔨 ビルド実行 - ${{ matrix.boards.boardname }}
+      - name: 🔨 Build SlimeVR-Tracker-nRF - ${{ matrix.boards.boardname }}
         if: ${{ matrix.boards.type == 'tracker' }}
         shell: bash
         run: |
@@ -356,8 +325,7 @@ jobs:
              "Releases/${OUTPUT_NAME}.${FILEFORMAT}" || mv "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}" \
              "Releases/${OUTPUT_NAME}.${FILEFORMAT}"
 
-      # ===== DTS の収集とパッケージング =====
-      - name: DTS を収集（before/after/diff）して圧縮
+      - name: Collect DTS (before/after) & Diff, then Package
         shell: bash
         run: |
           set -euo pipefail
@@ -380,19 +348,19 @@ jobs:
           tar -czf "Releases/${OUTPUT_NAME}_DTS.tgz" -C Releases dts
           ls -la Releases
 
-      - name: アーティファクトをアップロード（UF2）
+      - name: Upload Artifact (UF2)
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
           path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
 
-      - name: アーティファクトをアップロード（DTS パッケージ）
+      - name: Upload Artifact (DTS package)
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.OUTPUT_NAME }}_DTS.tgz
           path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
 
-      - name: GitHub リリースの作成/更新
+      - name: Create/Update Github Release
         uses: mini-bomba/create-github-release@v1.2.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
