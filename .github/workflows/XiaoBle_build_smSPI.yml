@@ -1,0 +1,450 @@
+name: Build XiaoBle Tracker (smSPI: SPI+I2C)
+
+on:
+  workflow_dispatch:
+
+# Minimum permissions so tag/release updates won't be rejected
+permissions:
+  contents: write
+  workflows: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        boards:
+          - boardname: "xiao_ble/nrf52840"
+            type: "tracker"
+            fileformat: "uf2"
+            filename: "XiaoBle_SlimeNRF_Tracker_smSPI"
+
+    runs-on: ubuntu-latest
+
+    # ▶ Change pins and feature switches here
+    env:
+      # --- Pin mapping (SPI + I2C) ---
+      # SPI
+      MISO: "P1.14"
+      MOSI: "P1.15"
+      SCK:  "P1.13"
+      CS:   "P1.12"
+      # I2C
+      SCL:  "P0.28"
+      SDA:  "P0.03"
+      # Others
+      PWM0: "P0.15"
+      SW0:  "P0.02"
+      LED:  "P0.17"
+      CLK:  "P0.28"
+      INT:  "P0.03"
+      VCC:  "P0.14"
+
+      # --- Feature switches ---
+      MAGNETOMETER: "enabled"
+      SLEEP:        "disabled"
+      SENSOR_CLOCK: "enabled"   # only comment/uncomment clk-gpios; does not change the pin you set
+      EXTRA_ACTIONS: "enabled"
+      SW0_BUTTON:   "enabled"   # only comments/uncomments 'sw0 =' line; actual button pin still written into buttons
+
+    steps:
+      - name: Acquire code (root)
+        uses: actions/checkout@v5
+
+      - name: Put commit hash/name in env variables
+        shell: bash
+        run: |
+          echo "GIT_HASH=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+          {
+            echo "GIT_MESSAGE<<EOF"
+            git log -1 --pretty=%B
+            echo "EOF"
+          } >> $GITHUB_ENV
+
+      - name: Clean landing folder for workspace repo
+        shell: bash
+        run: |
+          rm -rf zephyr-workspace/SlimeNRF-CI
+
+      - name: Acquire code (workspace)
+        uses: actions/checkout@v5
+        with:
+          path: zephyr-workspace/SlimeNRF-CI
+
+      - name: Install Dependencies + Python venv + West
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git cmake ninja-build gperf ccache dfu-util device-tree-compiler wget \
+            python3-dev python3-pip python3-setuptools python3-tk python3-wheel python3-venv \
+            xz-utils file make gcc gcc-multilib g++-multilib libsdl2-dev libmagic1
+          python3 -m venv "$HOME/.venv"
+          "$HOME/.venv/bin/python" -m pip install --upgrade pip
+          "$HOME/.venv/bin/python" -m pip install west ninja
+          echo "$HOME/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install Zephyr SDK
+        shell: bash
+        run: |
+          wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
+          tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C "$HOME"/
+          "$HOME/zephyr-sdk-0.17.2/setup.sh" -c -t arm-zephyr-eabi
+
+      - name: Initialize Zephyr Workspace
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          rm -rf .west
+          west init -l SlimeNRF-CI
+          west update --narrow -o=--depth=1
+          west zephyr-export
+
+      - name: Install Python Dependencies
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          python -m pip install -r zephyr/scripts/requirements.txt
+
+      - name: Derive build variables (env)
+        shell: bash
+        run: |
+          echo "FILEFORMAT=${{ matrix.boards.fileformat }}" >> $GITHUB_ENV
+          echo "BOARD=${{ matrix.boards.boardname }}" >> $GITHUB_ENV
+          echo "OUTPUT_NAME=${{ matrix.boards.filename }}" >> $GITHUB_ENV
+
+      - name: Prepare Releases folder
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          rm -rf Releases
+          mkdir -p Releases/dts
+
+      - name: Snapshot DTS BEFORE modifications
+        if: ${{ matrix.boards.type == 'tracker' }}
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          cp "SlimeVR-Tracker-nRF/boards/xiao_ble.overlay" "Releases/dts/xiao_ble.before.overlay" || true
+
+      # === Apply SPI + I2C pin mapping (override spi2_* and i2c1_* states) ===
+      - name: Apply smSPI (SPI+I2C) pin mapping and print snippets + full
+        if: ${{ matrix.boards.type == 'tracker' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+          python - <<'PY'
+          import os, re, pathlib, sys
+
+          p = pathlib.Path("SlimeVR-Tracker-nRF/boards/xiao_ble.overlay")
+          s = p.read_text()
+
+          # Parse "P0.28" -> (0, 28)
+          def parse_pin(v: str):
+            v = v.strip().upper().replace('P','')
+            port, pin = (v.split('.',1) if '.' in v else ('0', v))
+            port, pin = int(port), int(pin)
+            if port not in (0,1): sys.exit(f"Invalid port P{port}")
+            if port == 1 and not (0 <= pin <= 15): sys.exit("Port 1 supports only 0..15")
+            if not (0 <= pin <= 31): sys.exit("Pin must be 0..31")
+            return port, pin
+
+          E=os.environ
+          # SPI pins
+          SCK  = parse_pin(E["SCK"]);  MOSI = parse_pin(E["MOSI"]); MISO = parse_pin(E["MISO"]); CS = parse_pin(E["CS"])
+          # I2C pins
+          SCL  = parse_pin(E["SCL"]);  SDA  = parse_pin(E["SDA"])
+          # Others
+          PWM0 = parse_pin(E["PWM0"]); LED  = parse_pin(E["LED"]);  INT0 = parse_pin(E["INT"])
+          CLK  = parse_pin(E["CLK"]);  VCC  = parse_pin(E["VCC"]);  SW0  = parse_pin(E["SW0"])
+
+          # 1) Override pinctrl states for SPI (spi2_default/sleep)
+          spi_block = f"""
+          &spi2_default {{
+            group1 {{
+              /* SPI SCK/MOSI/MISO */
+              psels = <NRF_PSEL(SPIM_SCK,  {SCK[0]},  {SCK[1]})>,
+                      <NRF_PSEL(SPIM_MOSI, {MOSI[0]}, {MOSI[1]})>,
+                      <NRF_PSEL(SPIM_MISO, {MISO[0]}, {MISO[1]})>;
+            }};
+          }};
+          &spi2_sleep {{
+            group1 {{
+              psels = <NRF_PSEL(SPIM_SCK,  {SCK[0]},  {SCK[1]})>,
+                      <NRF_PSEL(SPIM_MOSI, {MOSI[0]}, {MOSI[1]})>,
+                      <NRF_PSEL(SPIM_MISO, {MISO[0]}, {MISO[1]})>;
+              low-power-enable;
+            }};
+          }};
+          """
+
+          # 2) Override pinctrl states for I2C (i2c1_default/sleep)
+          i2c_block = f"""
+          &i2c1_default {{
+            group1 {{
+              /* I2C SCL/SDA with internal bias disabled */
+              psels = <NRF_PSEL(TWIM_SCL, {SCL[0]}, {SCL[1]})>,
+                      <NRF_PSEL(TWIM_SDA, {SDA[0]}, {SDA[1]})>;
+              bias-disable;
+            }};
+          }};
+          &i2c1_sleep {{
+            group1 {{
+              psels = <NRF_PSEL(TWIM_SCL, {SCL[0]}, {SCL[1]})>,
+                      <NRF_PSEL(TWIM_SDA, {SDA[0]}, {SDA[1]})>;
+            }};
+          }};
+          """
+
+          if not s.endswith("\n"): s += "\n"
+          s += spi_block + "\n" + i2c_block + "\n"
+
+          # 3) Patch &spi3 to point to spi2_* and set CS
+          def patch_spi3(src: str) -> str:
+            # pinctrl-0
+            if re.search(r'^\s*pinctrl-0\s*=', src, flags=re.M):
+              src = re.sub(r'^\s*pinctrl-0\s*=\s*<[^;]+>;\s*', '\t\tpinctrl-0 = <&spi2_default>;\n', src, flags=re.M)
+            else:
+              src = '\t\tpinctrl-0 = <&spi2_default>;\n' + src
+            # pinctrl-1
+            if re.search(r'^\s*pinctrl-1\s*=', src, flags=re.M):
+              src = re.sub(r'^\s*pinctrl-1\s*=\s*<[^;]+>;\s*', '\t\tpinctrl-1 = <&spi2_sleep>;\n', src, flags=re.M)
+            else:
+              src = '\t\tpinctrl-1 = <&spi2_sleep>;\n' + src
+            # pinctrl-names
+            if not re.search(r'^\s*pinctrl-names\s*=\s*".*default.*".*".*sleep.*"', src, flags=re.M):
+              src = '\t\tpinctrl-names = "default", "sleep";\n' + src
+            # cs-gpios
+            if re.search(r'^\s*cs-gpios\s*=', src, flags=re.M):
+              src = re.sub(
+                r'(^\s*cs-gpios\s*=\s*<\s*&gpio)[01]\s+\d+\s+(?:GPIO_[A-Z_]+|0x[0-9a-fA-F]+)(\s*>;\s*)',
+                lambda m: f"{m.group(1)}{CS[0]} {CS[1]} GPIO_ACTIVE_LOW{m.group(2)}",
+                src, flags=re.M
+              )
+            else:
+              src = f'\t\tcs-gpios = <&gpio{CS[0]} {CS[1]} GPIO_ACTIVE_LOW>;\n' + src
+            return src
+
+          s = re.sub(
+            r'(&spi3\s*\{)(.*?)(\n\};)',
+            lambda m: m.group(1) + patch_spi3(m.group(2)) + m.group(3),
+            s, flags=re.S
+          )
+
+          # 4) PWM0 psel update
+          s = re.sub(
+            r'(NRF_PSEL\s*\(\s*PWM_OUT0\s*,\s*)[01]\s*,\s*\d+(\s*\))',
+            lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}",
+            s
+          )
+
+          # 5) zephyr,user: led/int0/vcc/clk
+          def set_prop(src, prop, port, pin, flags_text):
+            rx = re.compile(rf'({prop}\s*=\s*)<[^>]*>(\s*;\s*)')
+            if rx.search(src):
+              src = rx.sub(lambda m: f"{m.group(1)}<&gpio{port} {pin}{flags_text}>{m.group(2)}", src)
+            else:
+              uz = re.compile(r"(zephyr,user\s*\{)(.*?)(\n\t*\};)", re.S)
+              src = uz.sub(lambda m: f"{m.group(1)}{m.group(2)}\n\t\t{prop} = <&gpio{port} {pin}{flags_text}>;{m.group(3)}", src)
+            return src
+
+          s = set_prop(s, "led-gpios",  LED[0],  LED[1],  " (GPIO_OPEN_DRAIN|GPIO_ACTIVE_LOW)")
+          s = set_prop(s, "int0-gpios", INT0[0], INT0[1], " 0")
+          s = set_prop(s, "vcc-gpios",  VCC[0],  VCC[1],  " 0")
+
+          # clk-gpios (keep flags, update only port/pin; works for commented/uncommented)
+          s = re.sub(
+            r'(^\s*//\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
+            lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}",
+            s, flags=re.M
+          )
+          s = re.sub(
+            r'(^\s*clk-gpios\s*=\s*<\s*&gpio)[01]\s+\d+([^>]*>;\s*)',
+            lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}",
+            s, flags=re.M
+          )
+
+          # 6) button_0 gpios (0x11 = PULL_UP | ACTIVE_LOW)
+          s = re.sub(
+            r'(button_0\s*\{[^{}]*?gpios\s*=\s*)<[^>]*>(\s*;)',
+            lambda m: f'{m.group(1)}<&gpio{SW0[0]} {SW0[1]} 0x11>{m.group(2)}',
+            s, flags=re.S
+          )
+
+          # Ensure we don't accidentally delete spi3 (in case an I2C-only overlay had it removed)
+          s = re.sub(r'^\s*/delete-node/\s*&spi3;\s*$', '/* keep spi3 for smSPI */', s, flags=re.M)
+
+          # Write file back
+          p.write_text(s)
+
+          # --- Diagnostics: snippets + full overlay with line numbers ---
+          def grab(label):
+            m = re.search(rf'(&{label}\s*\{{)(.*?)(\n\}};)', s, flags=re.S)
+            return (m.group(1)+m.group(2)+m.group(3)) if m else "(not found)"
+
+          print("=== Pin Summary ===")
+          print(f"SPI  SCK=P{SCK[0]}.{SCK[1]}  MOSI=P{MOSI[0]}.{MOSI[1]}  MISO=P{MISO[0]}.{MISO[1]}  CS=P{CS[0]}.{CS[1]}")
+          print(f"I2C  SCL=P{SCL[0]}.{SCL[1]}  SDA=P{SDA[0]}.{SDA[1]}")
+          print(f"PWM0=P{PWM0[0]}.{PWM0[1]}  LED=P{LED[0]}.{LED[1]}  INT=P{INT0[0]}.{INT0[1]}  CLK=P{CLK[0]}.{CLK[1]}  VCC=P{VCC[0]}.{VCC[1]}  SW0=P{SW0[0]}.{SW0[1]}")
+          print("=== &spi3 (after) ===")
+          print(grab("spi3"))
+          print("=== &spi2_default / &spi2_sleep (after) ===")
+          print(grab("spi2_default"))
+          print(grab("spi2_sleep"))
+          print("=== &i2c1_default / &i2c1_sleep (after) ===")
+          print(grab("i2c1_default"))
+          print(grab("i2c1_sleep"))
+          print("=== FULL xiao_ble.overlay (after) with line numbers ===")
+          for i, line in enumerate(s.splitlines()):
+            print(f"{i+1:04d}: {line}")
+          PY
+
+      # === Feature switches (read from env) ===
+      - name: External Sensor Clock
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${SENSOR_CLOCK}" == "enabled" ]]; then
+            sed -i "s#^[[:space:]]*//[[:space:]]*clk-gpios#\t\tclk-gpios#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+            printf "\nCONFIG_USE_SENSOR_CLOCK=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            sed -i "s#^\([[:space:]]*\)clk-gpios[[:space:]]*=#\1// clk-gpios =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+            printf "\nCONFIG_USE_SENSOR_CLOCK=n\n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+
+      - name: Extra Actions
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${EXTRA_ACTIONS}" == "enabled" ]]; then
+            printf "\nCONFIG_USER_EXTRA_ACTIONS=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            printf "\nCONFIG_USER_EXTRA_ACTIONS=n\n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+
+      - name: Magnetometer
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${MAGNETOMETER}" == "enabled" ]]; then
+            printf "\nCONFIG_SENSOR_USE_MAG=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            printf "\nCONFIG_SENSOR_USE_MAG=n\n" >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+
+      - name: Sleep
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${SLEEP}" == "enabled" ]]; then
+            printf "\nCONFIG_USE_IMU_WAKE_UP=y\nCONFIG_USE_ACTIVE_TIMEOUT=y\n" >> SlimeVR-Tracker-nRF/prj.conf
+          else
+            {
+              printf "\nCONFIG_USE_IMU_WAKE_UP=n\n"
+              printf "CONFIG_USE_ACTIVE_TIMEOUT=n\n"
+              printf "CONFIG_SENSOR_LP_TIMEOUT=300000\n"
+              printf "CONFIG_SENSOR_USE_LOW_POWER_2=n\n"
+            } >> SlimeVR-Tracker-nRF/prj.conf
+          fi
+
+      - name: SW0 Button (comment/uncomment helper)
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          if [[ "${SW0_BUTTON}" == "enabled" ]]; then
+            sed -i "s#^[[:space:]]*//[[:space:]]*sw0[[:space:]]*=#\t\tsw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay || true
+          else
+            sed -i "s#^\([[:space:]]*\)sw0[[:space:]]*=#\1// sw0 =#g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay || true
+          fi
+
+      # ===== Build =====
+      - name: Build SlimeVR-Tracker-nRF - ${{ matrix.boards.boardname }}
+        if: ${{ matrix.boards.type == 'tracker' }}
+        shell: bash
+        run: |
+          cd zephyr-workspace
+          rm -rf SlimeVR-Tracker-nRF/build
+          mkdir -p SlimeVR-Tracker-nRF/build
+          west build \
+            --board "${BOARD}" \
+            --pristine=always SlimeVR-Tracker-nRF \
+            --build-dir SlimeVR-Tracker-nRF/build \
+            -- \
+            -DNCS_TOOLCHAIN_VERSION=NONE \
+            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
+          mv "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}" \
+             "Releases/${OUTPUT_NAME}.${FILEFORMAT}"
+
+      # ===== DTS / overlay collect, diff and package =====
+      - name: Collect DTS (before/after) & Diff, then Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+
+          DTS_MAIN="SlimeVR-Tracker-nRF/boards/xiao_ble.overlay"
+
+          cp "$DTS_MAIN"  "Releases/dts/xiao_ble.after.overlay" || true
+
+          if [[ -f "Releases/dts/xiao_ble.before.overlay" && -f "Releases/dts/xiao_ble.after.overlay" ]]; then
+            diff -u "Releases/dts/xiao_ble.before.overlay" "Releases/dts/xiao_ble.after.overlay" > "Releases/dts/xiao_ble.pins.diff" || true
+          else
+            echo "WARN: xiao_ble.before.overlay not found, skipping diff"
+          fi
+
+          if [[ -f "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.dts" ]]; then
+            cp "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.dts" "Releases/dts/zephyr.final.dts"
+          fi
+
+          tar -czf "Releases/${OUTPUT_NAME}_DTS.tgz" -C Releases dts
+          ls -la Releases
+
+      - name: Upload Artifact (UF2)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+
+      - name: Upload Artifact (DTS package)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_NAME }}_DTS.tgz
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
+
+      - name: Create/Update Github Release
+        uses: mini-bomba/create-github-release@v1.2.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: "latest"
+          prerelease: false
+          name: "Latest Firmware"
+          body: |
+            Manual build of the SlimeNRF Tracker Firmware (XIAO BLE smSPI: SPI+I2C).
+            Board: ${{ env.BOARD }}
+
+            Features:
+              MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
+              CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
+              SW0=${{ env.SW0_BUTTON }}
+
+            Pins (SPI):
+              SCK=${{ env.SCK }}, MOSI=${{ env.MOSI }}, MISO=${{ env.MISO }}, CS=${{ env.CS }}
+            Pins (I2C):
+              SCL=${{ env.SCL }}, SDA=${{ env.SDA }}
+            Others:
+              PWM0=${{ env.PWM0 }}, LED=${{ env.LED }}, INT=${{ env.INT }}, CLK=${{ env.CLK }}, VCC=${{ env.VCC }}, SW0=${{ env.SW0 }}
+
+            DTS artifacts:
+              - xiao_ble.before.overlay
+              - xiao_ble.after.overlay
+              - xiao_ble.pins.diff (before vs after)
+              - zephyr.final.dts
+          files: |
+            zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+            zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
+          clear_attachments: true
