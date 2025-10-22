@@ -1,16 +1,13 @@
-name: Build XiaoBle Tracker (smSPI: SPI+I2C)
+name: Build XiaoBle Tracker (smSPI)
 
 on:
   workflow_dispatch:
 
-# Minimum permissions so tag/release updates won't be rejected
-permissions:
-  contents: write
-  workflows: write
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions: write-all
 
 jobs:
   build:
