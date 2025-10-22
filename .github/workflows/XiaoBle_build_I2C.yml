@@ -123,7 +123,6 @@ jobs:
           cd zephyr-workspace
           cp "SlimeVR-Tracker-nRF/boards/xiao_ble.overlay" "Releases/dts/xiao_ble.before.overlay" || true
 
-      # === I2C 用の pinctrl と GPIO を環境変数から反映（&i2c1 使用、&spi3 は削除） ===
       - name: ✍️ I2C ピン割当と GPIO を反映（&i2c1_* を上書き／&spi3 を削除）＋結果を出力
         if: ${{ matrix.boards.type == 'tracker' }}
         shell: bash
@@ -137,7 +136,7 @@ jobs:
           p = pathlib.Path("SlimeVR-Tracker-nRF/boards/xiao_ble.overlay")
           s = p.read_text()
 
-          # --- 文字列 "P0.28" → (0,28) へ変換 ---
+          # --- "P0.28" → (0,28) 変換 ---
           def parse_pin(v: str):
             v = v.strip().upper().replace('P','')
             port, pin = (v.split('.',1) if '.' in v else ('0', v))
@@ -146,6 +145,26 @@ jobs:
             if port == 1 and not (0 <= pin <= 15): sys.exit("Port 1 は 0..15 のみ対応")
             if not (0 <= pin <= 31): sys.exit("ピン番号は 0..31")
             return port, pin
+
+          # --- ノード範囲を { } バランスで取得 ---
+          def node_span(text: str, label: str):
+            m = re.search(rf'&{label}\\s*\\{{', text)
+            if not m: return None
+            i = m.end() - 1  # '{' の位置
+            depth = 0
+            start = m.start()
+            j = i
+            while j < len(text):
+              ch = text[j]
+              if ch == '{': depth += 1
+              elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                  j += 1
+                  if j < len(text) and text[j] == ';': j += 1
+                  return (start, j)
+              j += 1
+            return None
 
           E = os.environ
           SCL  = parse_pin(E["SCL"])
@@ -157,7 +176,7 @@ jobs:
           VCC  = parse_pin(E["VCC"])
           SW0  = parse_pin(E["SW0"])
 
-          # --- 1) &i2c1_default / &i2c1_sleep に TWIM の psels を上書き ---
+          # --- 1) &i2c1_default / &i2c1_sleep を上書き追加 ---
           i2c_block = f"""
           &i2c1_default {{
             group1 {{
@@ -174,15 +193,17 @@ jobs:
             }};
           }};
           """
-          if not s.endswith("\\n"): s += "\\n"
-          s += i2c_block + "\\n"
+          if not s.endswith("\n"): s += "\n"
+          s += i2c_block + "\n"
 
-          # --- 2) SPI3 は I2C ビルドでは不要：ノード本文を除去し、delete-node 指示を追記 ---
-          s = re.sub(r'&spi3\\s*\\{.*?\\n\\};', '/* spi3: I2C ビルドのため削除 */\\n', s, flags=re.S)
+          # --- 2) &spi3 ノードを完全削除（brace バランスで安全に） ---
+          span = node_span(s, "spi3")
+          if span:
+            s = s[:span[0]] + "/* spi3: I2C ビルドのため削除 */\n" + s[span[1]:]
           if "/delete-node/ &spi3;" not in s:
-            s += "\\n/delete-node/ &spi3;\\n"
+            s += "\n/delete-node/ &spi3;\n"
 
-          # --- 3) PWM0 のピンを上書き ---
+          # --- 3) PWM0 を上書き ---
           s = re.sub(
             r'(NRF_PSEL\\s*\\(\\s*PWM_OUT0\\s*,\\s*)[01]\\s*,\\s*\\d+(\\s*\\))',
             lambda m: f"{m.group(1)}{PWM0[0]}, {PWM0[1]}{m.group(2)}",
@@ -193,9 +214,11 @@ jobs:
           def set_prop(src, prop, port, pin, flags_text):
             rx = re.compile(rf'({prop}\\s*=\\s*)<[^>]*>(\\s*;\\s*)')
             if rx.search(src):
-              return rx.sub(lambda m: f"{m.group(1)}<&gpio{port} {pin}{flags_text}>{m.group(2)}", src)
-            uz = re.compile(r"(zephyr,user\\s*\\{)(.*?)(\\n\\t*\\};)", re.S)
-            return uz.sub(lambda m: f"{m.group(1)}{m.group(2)}\\n\\t\\t{prop} = <&gpio{port} {pin}{flags_text}>;{m.group(3)}", src)
+              src = rx.sub(lambda m: f"{m.group(1)}<&gpio{port} {pin}{flags_text}>{m.group(2)}", src)
+            else:
+              uz = re.compile(r"(zephyr,user\\s*\\{)(.*?)(\\n\\t*\\};)", re.S)
+              src = uz.sub(lambda m: f"{m.group(1)}{m.group(2)}\\n\\t\\t{prop} = <&gpio{port} {pin}{flags_text}>;{m.group(3)}", src)
+            return src
 
           s = set_prop(s, "led-gpios",  LED[0],  LED[1],  " (GPIO_OPEN_DRAIN|GPIO_ACTIVE_LOW)")
           s = set_prop(s, "int0-gpios", INT0[0], INT0[1], " 0")
@@ -213,28 +236,41 @@ jobs:
             s, flags=re.M
           )
 
-          # --- 5) button_0 の gpios を上書き（0x11 = PULL_UP | ACTIVE_LOW）---
+          # --- 5) button_0 の gpios（0x11 = PULL_UP | ACTIVE_LOW）---
           s = re.sub(
             r'(button_0\\s*\\{[^{}]*?gpios\\s*=\\s*)<[^>]*>(\\s*;)',
             lambda m: f'{m.group(1)}<&gpio{SW0[0]} {SW0[1]} 0x11>{m.group(2)}',
             s, flags=re.S
           )
 
+          # --- 6) 仕上げの正規化（重複フラグや 0 0 の除去）---
+          s = re.sub(
+            r'\\(GPIO_OPEN_DRAIN\\|GPIO_ACTIVE_LOW\\)\\s+\\(GPIO_OPEN_DRAIN\\|GPIO_ACTIVE_LOW\\)',
+            r'(GPIO_OPEN_DRAIN|GPIO_ACTIVE_LOW)', s
+          )
+          s = re.sub(
+            r'(<\\s*&gpio[01]\\s+\\d+)\\s+0\\s+0(\\s*>)',
+            r'\\1 0\\2', s
+          )
+
           # --- 書き戻し ---
           p.write_text(s)
 
-          # --- ここから結果の簡易出力（確認用） ---
+          # ====== 出力（確認用） ======
           def numbered(text: str):
             return "\\n".join(f"{i+1:04d}: {line}" for i, line in enumerate(text.splitlines()))
+
+          def node_text(text: str, label: str):
+            sp = node_span(text, label)
+            return text[sp[0]:sp[1]] if sp else "(not found)"
 
           print("=== Pin Summary ===")
           print(f"SCL=P{SCL[0]}.{SCL[1]}  SDA=P{SDA[0]}.{SDA[1]}")
           print(f"PWM0=P{PWM0[0]}.{PWM0[1]}  LED=P{LED[0]}.{LED[1]}")
           print(f"INT=P{INT0[0]}.{INT0[1]}  CLK=P{CLK[0]}.{CLK[1]}  VCC=P{VCC[0]}.{VCC[1]}  SW0=P{SW0[0]}.{SW0[1]}")
 
-          m = re.search(r'(&i2c1\\s*\\{.*?\\n\\};)', s, flags=re.S)
           print("=== &i2c1 block (after) ===")
-          print(m.group(1) if m else "(not found)")
+          print(node_text(s, "i2c1"))
 
           print("=== &i2c1_default / &i2c1_sleep (override) ===")
           print(i2c_block.strip())
