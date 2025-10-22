@@ -423,7 +423,7 @@ jobs:
           prerelease: false
           name: "Latest Firmware"
           body: |
-            Manual build of the SlimeNRF Tracker Firmware (XIAO BLE smSPI: SPI+I2C).
+            Manual build of the SlimeNRF Tracker Firmware (XIAO BLE smSPI).
             Board: ${{ env.BOARD }}
 
             Features:
