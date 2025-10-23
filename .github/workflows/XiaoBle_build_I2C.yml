@@ -179,7 +179,6 @@ jobs:
           i2c_block = f"""
           &i2c1_default {{
             group1 {{
-              /* SCL/SDA を設定（内部プル無効） */
               psels = <NRF_PSEL(TWIM_SCL, {SCL[0]}, {SCL[1]})>,
                       <NRF_PSEL(TWIM_SDA, {SDA[0]}, {SDA[1]})>;
               bias-disable;
@@ -189,6 +188,8 @@ jobs:
             group1 {{
               psels = <NRF_PSEL(TWIM_SCL, {SCL[0]}, {SCL[1]})>,
                       <NRF_PSEL(TWIM_SDA, {SDA[0]}, {SDA[1]})>;
+              bias-disable;
+              low-power-enable;
             }};
           }};
           """
@@ -220,7 +221,6 @@ jobs:
           s = set_prop(s, "int0-gpios", INT0[0], INT0[1], " 0")
           s = set_prop(s, "vcc-gpios",  VCC[0],  VCC[1],  " 0")
 
-          # clk-gpios はフラグを保持したままポート/ピンのみ更新（コメント/非コメント両対応）
           s = re.sub(
             r'(^\\s*//\\s*clk-gpios\\s*=\\s*<\\s*&gpio)[01]\\s+\\d+([^>]*>;\\s*)',
             lambda m: f"{m.group(1)}{CLK[0]} {CLK[1]}{m.group(2)}",
