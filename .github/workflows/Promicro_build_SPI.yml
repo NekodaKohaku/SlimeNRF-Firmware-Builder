@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         boards:
-          - boardname: "promicro_uf2/nrf52840/"
+          - boardname: "promicro_uf2/nrf52840"
             type: "tracker"
             fileformat: "uf2"
             filename: "Promicro_SlimeNRF_Tracker_"
