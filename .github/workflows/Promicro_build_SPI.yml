@@ -291,7 +291,7 @@ jobs:
           prerelease: false
           name: "Latest Firmware"
           body: |
-            Manual build of the SlimeNRF Tracker Firmware.
+            Manual build of the SlimeNRF Tracker Firmware (Promicro SPI).
             Board: ${{ env.BOARD }}
             
             Features:
@@ -304,9 +304,9 @@ jobs:
               PWM0=${{ env.PWM0 }}, LED=${{ env.LED }}, INT=${{ env.INT }}, CLK=${{ env.CLK }}, VCC=${{ env.VCC }}, SW0=${{ env.SW0 }}
 
             DTS artifacts:
-              - xiao_ble.before.overlay
-              - xiao_ble.after.overlay
-              - xiao_ble.pins.diff (before vs after)
+              - promicro.before.overlay
+              - promicro.after.overlay
+              - promicro.pins.diff (before vs after)
               - zephyr.final.dts
           files: |
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
