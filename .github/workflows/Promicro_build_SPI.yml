@@ -338,9 +338,9 @@ jobs:
               PWM0=${{ env.PWM0 }}, LED=${{ env.LED }}, INT=${{ env.INT }}, CLK=${{ env.CLK }}, VCC=${{ env.VCC }}, SW0=${{ env.SW0 }}
 
             DTS artifacts:
-              - promicro_before.dts
-              - promicro_after.dts
-              - promicro_pins.diff (before vs after)
+              - promicro_uf2.before.dts
+              - promicro_uf2.after.dts
+              - promicro_uf2.pins.diff (before vs after)
               - zephyr.final.dts
           files: |
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
