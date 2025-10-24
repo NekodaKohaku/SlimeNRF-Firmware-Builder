@@ -62,7 +62,7 @@ jobs:
 
       - name: 🧰 Install Dependencies + West
         run: |
-          sudo apt-get update && sudo apt install --no-install-recommends \
+          sudo apt-get update && sudo apt install -y --no-install-recommends \
           git \
           cmake \
           ninja-build \
@@ -111,6 +111,12 @@ jobs:
         run: |
           cd zephyr-workspace
           pip3 install -r zephyr/scripts/requirements.txt
+
+      - name: 🔧 Derive build variables (env)
+        run: |
+          echo "FILEFORMAT=${{ matrix.fileformat }}" >> $GITHUB_ENV
+          echo "BOARD=${{ matrix.boardname }}" >> $GITHUB_ENV
+          echo "OUTPUT_NAME=${{ matrix.filename }}" >> $GITHUB_ENV
 
       - name: 🔧 Preparing Build Environment
         if: always()
@@ -222,14 +228,12 @@ jobs:
         run: |
           cd zephyr-workspace
           printf "\n\nCONFIG_SENSOR_USE_MAG=n" >> SlimeVR-Tracker-nRF/prj.conf
-          printf "\n\nCONFIG_SENSOR_USE_MAG=n" >> Stacked-SmolSlime/prj.conf
 
       - name: 🔧 Enabling Magnetometer
         if: env.MAGNETOMETER == 'enabled'
         run: |
           cd zephyr-workspace
           printf "\n\nCONFIG_SENSOR_USE_MAG=y" >> SlimeVR-Tracker-nRF/prj.conf
-          printf "\n\nCONFIG_SENSOR_USE_MAG=y" >> Stacked-SmolSlime/prj.conf
 
       - name: 🔧 Disabling Sleep
         if: env.SLEEP == 'disabled'
@@ -254,7 +258,6 @@ jobs:
           find='sw0[ \t]='
           replace='// sw0 ='
           sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
-          sed -i "s|$find|$replace|g" Stacked-SmolSlime/boards/nordic/promicro_uf2/promicro_uf2.dts
 
       - name: 🔧 Enabling SW0 Button
         if: env.SW0_BUTTON == 'enabled'
@@ -263,7 +266,6 @@ jobs:
           find='\/\/\ssw0\s='
           replace='sw0 ='
           sed -i "s/$find/$replace/g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
-          sed -i "s/$find/$replace/g" Stacked-SmolSlime/boards/nordic/promicro_uf2/promicro_uf2.dts
 
       - name: 🔨 Build SlimeVR-Tracker-nRF - ${{ matrix.boardname }}
         run: |
@@ -279,7 +281,7 @@ jobs:
               -DNCS_TOOLCHAIN_VERSION=NONE \
               -DBOARD_ROOT=../SlimeVR-Tracker-nRF
 
-          mv SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${{ matrix.fileformat }} Releases/${{ matrix.boards.filename }}.${{ matrix.boards.fileformat }}
+          mv SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${{ matrix.fileformat }} Releases/${{ matrix.filename }}.${{ matrix.fileformat }}
 
 
       - name: Collect DTS
@@ -336,9 +338,9 @@ jobs:
               PWM0=${{ env.PWM0 }}, LED=${{ env.LED }}, INT=${{ env.INT }}, CLK=${{ env.CLK }}, VCC=${{ env.VCC }}, SW0=${{ env.SW0 }}
 
             DTS artifacts:
-              - promicro.before.dts
-              - promicro.after.dts
-              - promicro.pins.diff (before vs after)
+              - promicro_before.dts
+              - promicro_after.dts
+              - promicro_pins.diff (before vs after)
               - zephyr.final.dts
           files: |
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
