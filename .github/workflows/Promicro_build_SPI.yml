@@ -18,7 +18,7 @@ jobs:
           - boardname: "promicro_uf2/nrf52840"
             type: "tracker"
             fileformat: "uf2"
-            filename: "Promicro_SlimeNRF_Tracker_"
+            filename: "Promicro_SlimeNRF_Tracker"
 
     runs-on: ubuntu-latest
 
