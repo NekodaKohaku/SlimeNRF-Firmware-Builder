@@ -240,7 +240,7 @@ jobs:
           mv "SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}" \
              "Releases/${OUTPUT_NAME}.${FILEFORMAT}"
 
-      - name: Collect DTS
+      - name: 📁 Collect DTS
         shell: bash
         run: |
           set -euo pipefail
@@ -263,19 +263,19 @@ jobs:
           tar -czf "Releases/${OUTPUT_NAME}_DTS.tgz" -C Releases dts
           ls -la Releases
 
-      - name: Upload Artifact (UF2)
+      - name: 💾 Upload Artifact (UF2) - ${{ matrix.boardname }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
           path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
 
-      - name: Upload Artifact (DTS package)
+      - name: 💾 Upload Artifact (DTS package) - ${{ matrix.boardname }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.OUTPUT_NAME }}_DTS.tgz
           path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}_DTS.tgz
 
-      - name: Create/Update Github Release
+      - name: 📁 Create/Update Github Release
         uses: mini-bomba/create-github-release@v1.2.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
