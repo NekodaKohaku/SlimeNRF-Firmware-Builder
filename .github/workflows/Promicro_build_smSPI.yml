@@ -36,8 +36,8 @@ jobs:
       VCC:  "P0.31"
 
       #  --- I2C ---
-      I2C_SDA: "P1.13"
-      I2C_SCL: "P1.15"
+      SDA: "P1.13"
+      SCL: "P1.15"
 
       # --- 機能スイッチ---
       MAGNETOMETER: "enabled"
