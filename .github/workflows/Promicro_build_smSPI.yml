@@ -157,17 +157,20 @@ jobs:
             echo "$port $pin"
           }
 
+          read MISO_PORT MISO_PIN < <(parse_pin "${MISO}")
+          read MOSI_PORT MOSI_PIN < <(parse_pin "${MOSI}")
+          read  SCK_PORT  SCK_PIN < <(parse_pin "${SCK}")
+          read   CS_PORT   CS_PIN < <(parse_pin "${CS}")
+          read PWM0_PORT PWM0_PIN < <(parse_pin "${PWM0}")
+          read  SW0_PORT  SW0_PIN < <(parse_pin "${SW0}")
           read  LED_PORT  LED_PIN < <(parse_pin "${LED}")
           read  CLK_PORT  CLK_PIN < <(parse_pin "${CLK}")
           read  INT_PORT  INT_PIN < <(parse_pin "${INT}")
           read  VCC_PORT  VCC_PIN < <(parse_pin "${VCC}")
-          read  SW0_PORT  SW0_PIN < <(parse_pin "${SW0}")
-          read PWM0_PORT PWM0_PIN < <(parse_pin "${PWM0}")
-          read  SDA_PORT  SDA_PIN < <(parse_pin "${I2C_SDA:-P0.06}")
-          read  SCL_PORT  SCL_PIN < <(parse_pin "${I2C_SCL:-P0.08}")
-          read   CS_PORT   CS_PIN < <(parse_pin "${CS}")
+          read  SDA_PORT  SDA_PIN < <(parse_pin "${SDA}")
+          read  SCL_PORT  SCL_PIN < <(parse_pin "${SCL}")
 
-          for P in LED CLK INT VCC SW0 PWM0 SDA SCL CS; do
+          for P in MISO MOSI SCK CS PWM0 SW0 LED CLK INT VCC SDA SCL; do
             eval port=\$${P}_PORT pin=\$${P}_PIN
             if [[ $port -eq 1 && $pin -gt 15 ]]; then
               echo "$P: Port 1 supports only 0..15"; exit 1
