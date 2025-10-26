@@ -283,7 +283,6 @@ jobs:
 
           mv SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${{ matrix.fileformat }} Releases/${{ matrix.filename }}.${{ matrix.fileformat }}
 
-
       - name: 📁 Collect DTS
         shell: bash
         run: |
