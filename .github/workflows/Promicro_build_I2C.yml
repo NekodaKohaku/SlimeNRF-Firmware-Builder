@@ -24,19 +24,19 @@ jobs:
 
     # ✅ ここで「ピン配列」と「機能スイッチ」を変更する
     env:
-      SDA: "P0.06"
-      SCL: "P0.08"
+      SDA: "P0.24"
+      SCL: "P0.22"
       PWM0: "P0.15"
-      SW0:  "P1.00"
+      SW0:  "P0.06"
       LED:  "P0.15"
-      CLK:  "P0.20"
-      INT:  "P0.17"
-      VCC:  "P0.31"
+      CLK:  "P1.11"
+      INT:  "P0.02"
+      VCC:  "P0.17"
 
       # --- 機能スイッチ---
       MAGNETOMETER: "enabled"
       SLEEP:        "disabled"
-      SENSOR_CLOCK: "enabled"
+      SENSOR_CLOCK: "disabled"
       EXTRA_ACTIONS: "enabled"
       SW0_BUTTON:   "enabled"
 
