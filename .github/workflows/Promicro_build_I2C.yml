@@ -184,11 +184,11 @@ jobs:
 
           # LED / CLK / INT / VCC
           sed -i -E "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ {
-            s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#;
-            s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <\\&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#;
-            s#(clk-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#;
-            s#(int0-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${INT_PORT} ${INT_PIN}#;
-            s#(vcc-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${VCC_PORT} ${VCC_PIN}#;
+            s#(^[[:space:]]*led-gpios[[:space:]]*=[[:space:]]*<)[[:space:]]*&gpio[01][[:space:]]+(0x[[:xdigit:]]+|[0-9]+)#\\1\\&gpio${LED_PORT} ${LED_PIN}#;
+            s#(^[[:space:]]*//[[:space:]]*clk-gpios[[:space:]]*=[[:space:]]*<)[[:space:]]*&gpio[01][[:space:]]+(0x[[:xdigit:]]+|[0-9]+)#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#;
+            s#(^[[:space:]]*clk-gpios[[:space:]]*=[[:space:]]*<)[[:space:]]*&gpio[01][[:space:]]+(0x[[:xdigit:]]+|[0-9]+)#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#;
+            s#(^[[:space:]]*int0-gpios[[:space:]]*=[[:space:]]*<)[[:space:]]*&gpio[01][[:space:]]+(0x[[:xdigit:]]+|[0-9]+)#\1\&gpio${INT_PORT} ${INT_PIN}#;
+            s#(^[[:space:]]*vcc-gpios[[:space:]]*=[[:space:]]*<)[[:space:]]*&gpio[01][[:space:]]+(0x[[:xdigit:]]+|[0-9]+)#\1\&gpio${VCC_PORT} ${VCC_PIN}#;
           }" "$DTS"
 
       - name: 🔧 Disabling External Sensor Clock
