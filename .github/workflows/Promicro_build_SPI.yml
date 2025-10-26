@@ -183,7 +183,6 @@ jobs:
               psels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>;
           }" "$DTS"
 
-
           # &spi3 CS
           sed -i -E "/^[[:space:]]*&spi3[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#cs-gpios[[:space:]]*=<[^;]+>;#cs-gpios = <\\&gpio${CS_PORT} ${CS_PIN} GPIO_ACTIVE_LOW>;#g" "$DTS"
 
@@ -220,7 +219,7 @@ jobs:
           cd zephyr-workspace
           find="\/\/\sclk-gpios"
           replace="clk-gpios"
-          sed -i "s|//[[:space:]]*clk-gpios|clk-gpios|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
           printf "\n\nCONFIG_USE_SENSOR_CLOCK=y" >> SlimeVR-Tracker-nRF/prj.conf
 
       - name: 🔧 Disabling Magnetometer
