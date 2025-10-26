@@ -320,13 +320,13 @@ jobs:
               SW0=${{ env.SW0_BUTTON }}
 
             Pins:
-              SCK=${{ env.SCK }}, MOSI=${{ env.MOSI }}, MISO=${{ env.MISO }}, CS=${{ env.CS }}
+              SCL=${{ env.SCL }}, SDA=${{ env.SDA }}
               PWM0=${{ env.PWM0 }}, LED=${{ env.LED }}, INT=${{ env.INT }}, CLK=${{ env.CLK }}, VCC=${{ env.VCC }}, SW0=${{ env.SW0 }}
 
             DTS artifacts:
-              - promicro_uf2.before.dts
-              - promicro_uf2.after.dts
-              - promicro_uf2.pins.diff (before vs after)
+              - promicro.before.overlay
+              - promicro.after.overlay
+              - promicro.pins.diff (before vs after)
               - zephyr.final.dts
           files: |
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
