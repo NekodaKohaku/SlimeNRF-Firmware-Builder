@@ -25,7 +25,7 @@ manifest:
     - name: Stacked-SmolSlime
       url: https://github.com/LyallUlric/Stacked-SmolSlime.git
       path: Stacked-SmolSlime
-      revision: master
+      revision: main
 
     # vqf-c
     - name: vqf-c
