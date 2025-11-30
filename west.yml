@@ -11,7 +11,7 @@ manifest:
 
     # SlimeVR-Tracker-nRF-Receiver
     - name: SlimeVR-Tracker-nRF-Receiver
-      url: https://github.com/SlimeVR/SlimeVR-Tracker-nRF-Receiver
+      url: https://github.com/NekodaKohaku/SlimeVR-Tracker-nRF-Receiver
       path: SlimeVR-Tracker-nRF-Receiver
       revision: main
 
