@@ -301,7 +301,8 @@ jobs:
         if: always()
         uses: mini-bomba/create-github-release@v1.2.0
         with:
-          token: ${{ secrets.gh_token }}
+
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag: "latest"
           prerelease: false
           name: "Latest Firmware"
